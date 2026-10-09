@@ -4,6 +4,10 @@
 single-call scene generator with character context projections, validates proposed state changes and commits
 causal events through an injected store. Python 3.12+ is required.
 
+The project is under active incubation. Backward compatibility is not guaranteed
+for APIs, configuration or persisted formats; upgrades may require updating
+callers and recreating saves. See [contribution policy](CONTRIBUTING.md).
+
 ## Install and run offline
 
 From this package directory:
