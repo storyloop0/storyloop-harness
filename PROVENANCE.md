@@ -1,9 +1,9 @@
 # Repository provenance
 
 This repository was extracted from `packages/harness` in
-`https://github.com/lumman0/storyloop` on 2026-10-09. The source repository is
-planned to move to `https://github.com/storyloop0/storyloop-platform` while
-retaining the complete earlier history.
+`https://github.com/lumman0/storyloop` on 2026-10-09. The source repository has
+moved to `https://github.com/storyloop0/storyloop-platform`, retaining the
+complete earlier history. The original URL redirects to this canonical address.
 
 | Reference | Commit |
 | --- | --- |

@@ -110,7 +110,7 @@ A store adapter must preserve snapshot/event/observation/pending-work fields and
 expected-version commit semantics. Durable settlement, request ownership and
 recovery after a committed turn belong to the caller; harness alone does not
 provide billing recovery or distributed execution guarantees. See the platform's
-[recovery contract](https://github.com/lumman0/storyloop/blob/a14b3513edf45dd6de4b592a39be764901ceeb12/docs/turn-recovery.md).
+[recovery contract](https://github.com/storyloop0/storyloop-platform/blob/a14b3513edf45dd6de4b592a39be764901ceeb12/docs/turn-recovery.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and release steps,
 [CHANGELOG.md](CHANGELOG.md) for release notes, and
