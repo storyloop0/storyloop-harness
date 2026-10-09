@@ -5,7 +5,7 @@ from storyloop_harness.contracts import TurnInput, TurnOutcome
 from storyloop_harness.ports import GameStore, ModelPort, CampaignContext
 from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.runtime.turn_progress import TurnProgress
-from storyloop_harness.runtime.runner import WorkHandler, RunResult
+from storyloop_harness.runtime.runner import RunResult
 from storyloop_harness.adapters.telemetry import Telemetry
 from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.world.scenario import ScenarioPackage
@@ -35,8 +35,7 @@ class TurnEngine:
     def __init__(self, store: GameStore, package: ScenarioPackage, model: ModelPort,
                  *, clock: StoryClock | None = None, program: CampaignContext | None = None,
                  max_responders: int = 3, context_window_tokens: int = 65536,
-                 max_steps: int = 8, telemetry: Telemetry | None = None,
-                 legacy_npc_reply: WorkHandler | None = None):
+                 max_steps: int = 8, telemetry: Telemetry | None = None):
         self.package = package
         self.store = _RecordingStore(store)
         self.session = SingleCallGameSession(
@@ -44,8 +43,7 @@ class TurnEngine:
             SceneContextProjector(self.store, package, clock=clock, program=program,
                                   max_responders=max_responders,
                                   context_window_tokens=context_window_tokens),
-            clock=clock, max_steps=max_steps, telemetry=telemetry,
-            legacy_npc_reply=legacy_npc_reply)
+            clock=clock, max_steps=max_steps, telemetry=telemetry)
 
     async def run_turn(self, turn: TurnInput, *, progress: TurnProgress | None = None,
                        max_tick: int | None = None) -> TurnOutcome:
@@ -67,7 +65,7 @@ class TurnEngine:
 
     async def run_ready_work(self, game_id: str,
                              progress: TurnProgress | None = None) -> RunResult:
-        """Drain persisted work; callers collecting product usage also capture legacy replies."""
+        """Drain supported persisted work, including already generated NPC speech."""
         return await self.session.run_ready_work(game_id, progress)
 
     def proposed_options(self, game_id: str, turn_id: str,

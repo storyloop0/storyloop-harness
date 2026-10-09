@@ -19,7 +19,7 @@ from storyloop_harness.core.turn_result import TurnOutcome
 from storyloop_harness.runtime.player_knowledge import accepted_encounters, merge_knowledge
 from storyloop_harness.core.turn_result import StorySegment
 from storyloop_harness.runtime.presentation import segment_for_observation
-from storyloop_harness.runtime.runner import RunResult, TurnRunner, WorkHandler, WorkResult
+from storyloop_harness.runtime.runner import RunResult, TurnRunner, WorkResult
 from storyloop_harness.runtime.schedule import scenario_cue
 from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.runtime.turn_progress import TurnProgress, emit
@@ -52,8 +52,7 @@ class SingleCallGameSession:
     def __init__(self, store: GameStore, package: ScenarioPackage,
                  generator: SingleSceneGenerator, projector: SceneContextProjector,
                  *, clock: StoryClock | None = None, max_steps: int = 8,
-                 telemetry: Telemetry | None = None,
-                 legacy_npc_reply: WorkHandler | None = None) -> None:
+                 telemetry: Telemetry | None = None) -> None:
         self.store = store
         self.package = package
         self.generator = generator
@@ -61,7 +60,6 @@ class SingleCallGameSession:
         self.clock = clock
         self.max_steps = max_steps
         self.telemetry = telemetry or NoopTelemetry()
-        self.legacy_npc_reply = legacy_npc_reply
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
     def _npc_reply(self, snapshot: Snapshot, work: PendingWork) -> WorkResult:
@@ -102,16 +100,18 @@ class SingleCallGameSession:
         return WorkResult(event, tuple(observations), ())
 
     def _runner(self) -> TurnRunner:
-        handlers: dict[str, WorkHandler] = {"single_npc_reply": self._npc_reply,
-                                             "scenario_cue": scenario_cue}
-        if self.legacy_npc_reply is not None:
-            handlers["npc_reply"] = self.legacy_npc_reply
+        handlers = {"single_npc_reply": self._npc_reply, "scenario_cue": scenario_cue}
         return TurnRunner(self.store, handlers,
                           self.max_steps, telemetry=self.telemetry)
+
+    def _reject_legacy_work(self, game_id: str) -> None:
+        if any(work.kind == "npc_reply" for work in self.store.pending_work(game_id)):
+            raise ValueError("Unsupported legacy save contains npc_reply work; start a new game.")
 
     async def run_ready_work(self, game_id: str,
                              progress: TurnProgress | None = None) -> RunResult:
         async with self._locks.setdefault(game_id, asyncio.Lock()):
+            self._reject_legacy_work(game_id)
             return await self._runner().run_async(game_id)
 
     async def run_turn(self, game_id: str, player_text: str, turn_id: str,
@@ -126,6 +126,7 @@ class SingleCallGameSession:
         if not player_text.strip() or not turn_id:
             raise ValueError("turn requires text and ID")
         async with self._locks.setdefault(game_id, asyncio.Lock()):
+            self._reject_legacy_work(game_id)
             visible_before = {item.observation_id
                               for item in self.store.observations_for(game_id, "player")}
             event_id = f"{turn_id}:input"

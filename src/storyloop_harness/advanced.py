@@ -1,4 +1,4 @@
-"""Advanced story contracts and operations for persistence and legacy integrations.
+"""Advanced story contracts and operations for persistence and scene integrations.
 
 This explicit compatibility surface is separate from the ordinary TurnEngine facade."""
 from storyloop_harness.core.actions import (
@@ -34,9 +34,6 @@ from storyloop_harness.core.token_budget import (
 )
 from storyloop_harness.core.turn_result import (
     TurnOutcome,
-)
-from storyloop_harness.runtime.player_input import (
-    submit_player_input,
 )
 from storyloop_harness.runtime.player_knowledge import (
     PlayerEncounter,
@@ -87,4 +84,4 @@ from storyloop_harness.world.worldbook import (
     Worldbook,
 )
 
-__all__ = ['ActionRule', 'AgentContextCheckpoint', 'AgentContextEntry', 'Effect', 'MainDecision', 'Observation', 'OpenActionOutcome', 'PendingWork', 'PlayerEncounter', 'PlayerInput', 'RunResult', 'SceneContext', 'Snapshot', 'StatusField', 'StoryClock', 'StorySegment', 'TurnOutcome', 'TurnProgress', 'TurnRunner', 'WorkHandler', 'WorkResult', 'WorkSelector', 'WorldEvent', 'Worldbook', 'accepted_encounters', 'advance_time', 'adjudicate_action', 'apply_event', 'current_player_preferences', 'emit', 'estimate_tokens', 'merge_knowledge', 'physical_observations', 'player_preferences_scope', 'project_status_fields', 'read_path', 'render_prepared_opening', 'save_prologue', 'scenario_cue', 'segment_for_observation', 'status_effects', 'submit_player_input', 'validate_open_effects', 'validate_prepared_opening', 'value_at']
+__all__ = ['ActionRule', 'AgentContextCheckpoint', 'AgentContextEntry', 'Effect', 'MainDecision', 'Observation', 'OpenActionOutcome', 'PendingWork', 'PlayerEncounter', 'PlayerInput', 'RunResult', 'SceneContext', 'Snapshot', 'StatusField', 'StoryClock', 'StorySegment', 'TurnOutcome', 'TurnProgress', 'TurnRunner', 'WorkHandler', 'WorkResult', 'WorkSelector', 'WorldEvent', 'Worldbook', 'accepted_encounters', 'advance_time', 'adjudicate_action', 'apply_event', 'current_player_preferences', 'emit', 'estimate_tokens', 'merge_knowledge', 'physical_observations', 'player_preferences_scope', 'project_status_fields', 'read_path', 'render_prepared_opening', 'save_prologue', 'scenario_cue', 'segment_for_observation', 'status_effects', 'validate_open_effects', 'validate_prepared_opening', 'value_at']
