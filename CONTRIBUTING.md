@@ -21,7 +21,7 @@ the checkout, including the deterministic offline example and runtime imports.
 
 ## Versions and releases
 
-The package version lives in `pyproject.toml`. During the `0.1.x` series, keep the
+The package version lives in `pyproject.toml`. Within each `0.x` minor series, keep the
 documented public surfaces compatible; announce incompatible changes in a new
 minor version and document migration steps. Internal module paths are private.
 

@@ -99,11 +99,9 @@ def test_public_engine_accepts_platform_settings_and_bounded_progress():
     package.seed_game(store, 'settings')
     program = SimpleNamespace(current_action_context=lambda snapshot: {'goal': 'find the boat'})
     clock, telemetry = StoryClock(12), NoopTelemetry()
-    async def legacy(snapshot, work):
-        raise AssertionError('no legacy work seeded')
     engine = TurnEngine(store, package, OfflineModel(), clock=clock, program=program,
                         max_responders=1, context_window_tokens=8192, max_steps=3,
-                        telemetry=telemetry, legacy_npc_reply=legacy)
+                        telemetry=telemetry)
     # Settings affect different collaborators; their identity is part of assembly correctness.
     assert engine.session.clock is clock
     assert engine.session.projector.clock is clock
@@ -112,7 +110,6 @@ def test_public_engine_accepts_platform_settings_and_bounded_progress():
     assert engine.session.projector.context_window_tokens == 8192
     assert engine.session.max_steps == 3
     assert engine.session.telemetry is telemetry
-    assert engine.session.legacy_npc_reply is legacy
     progress = []
     async def observe(event):
         progress.append(event)
@@ -140,3 +137,15 @@ def test_documented_adapter_surfaces_export_story_types_without_product_types():
     assert generation.CompatibleOpenAIChatModel
     assert telemetry.NoopSpan
     assert usage.ModelUsage('offline', 'turn', 0, 0).input_tokens == 0
+
+
+def test_legacy_work_injection_and_emitter_are_removed():
+    import inspect
+    from storyloop_harness import TurnEngine, advanced
+    from storyloop_harness.runtime.single_call import SingleCallGameSession
+
+    for constructor in (TurnEngine, SingleCallGameSession):
+        assert 'legacy_npc_reply' not in inspect.signature(constructor).parameters
+    assert not hasattr(advanced, 'submit_player_input')
+    assert 'submit_player_input' not in advanced.__all__
+    assert importlib.util.find_spec('storyloop_harness.runtime.player_input') is None

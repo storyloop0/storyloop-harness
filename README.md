@@ -1,7 +1,7 @@
 # StoryLoop Harness
 
 `storyloop-harness` is an interactive narrative library. It runs the default
-single-call scene generator, validates proposed state changes and commits
+single-call scene generator with character context projections, validates proposed state changes and commits
 causal events through an injected store. Python 3.12+ is required.
 
 ## Install and run offline
@@ -30,7 +30,7 @@ outcome = await engine.run_turn(
 )
 ```
 
-Version `0.1.0` is built locally in this repository; this migration does not publish it to a package index. To consume a built artifact, run `python -m pip install /path/to/storyloop_harness-0.1.0-py3-none-any.whl`.
+Version `0.2.0` is built locally in this repository; this release does not publish it to a package index. To consume a built artifact, run `python -m pip install /path/to/storyloop_harness-0.2.0-py3-none-any.whl`.
 
 The top-level facade exports exactly `ScenarioPackage`, `TurnEngine`,
 `TurnInput`, `TurnOutcome`, `GameStore`, `ModelPort`, and the optional `CampaignContext` protocol.
@@ -56,17 +56,17 @@ persistent and is intended for examples and adapter contract tests.
 ## Product integration
 
 `TurnEngine` accepts `clock`, `program` (a `CampaignContext`), `max_responders`,
-`context_window_tokens`, `max_steps`, `telemetry`, and `legacy_npc_reply`.
+`context_window_tokens`, `max_steps`, and `telemetry`.
 `run_turn(TurnInput, progress=..., max_tick=...)` supports progress callbacks and
 campaign time boundaries. `proposed_options` and `proposed_status` read persisted
-turn suggestions; `run_ready_work` drains previously queued work, including an
-injected legacy NPC handler. Standalone background work reports usage to the
+turn suggestions; `run_ready_work` drains supported queued work, including
+deterministic delivery of saved `single_npc_reply` speech. Background work reports usage to the
 caller's `usage.collect_usage` scope; a normal turn returns it in `model_usage`.
 
 Additional explicit public surfaces support product adapters:
 
 - `advanced`: story events, snapshots, validation, projection, story clocks and
-  work contracts used by persistence and legacy integrations. This larger
+  work contracts used by persistence and scene integrations. This larger
   compatibility surface is separate from the ordinary turn facade.
 - `generation`: structured model transport, formatter and action suggestions.
 - `telemetry`: tracing protocols and no-op span implementation.
@@ -92,7 +92,7 @@ The former `story_harness` import namespace has been removed.
 
 `single_call` is the only supported current engine. An ordinary turn uses one
 structured scene-generation call, followed by validation and deterministic event
-commits; this does not promise one network call for every scheduled or legacy
+commits; this does not promise one network call for every scheduled
 work item. Failed generation does not commit proposed world changes. Projecting
 separate character histories into one model context is not a hard isolation
 boundary between characters.
@@ -103,8 +103,19 @@ provides deterministic fixtures. The documented facade, `contracts`, `ports`,
 `advanced`, `generation`, `telemetry`, `usage`, and `testing` are the supported
 surfaces. Internal `core`, `runtime`, `world`, `agents`, `models`, and `adapters`
 module paths are not extension APIs. There is no generic plugin or alternate
-engine registry. The platform owns the injected handler for saved `npc_reply`
-work; the archived beta is not a selectable engine.
+engine registry.
+
+Version `0.2.0` removes per-NPC ReAct execution, the `legacy_npc_reply`
+constructor injection and the `advanced.submit_player_input` beta work emitter.
+Saves containing pending `npc_reply` work are unsupported: `run_turn` and
+`run_ready_work` raise `ValueError` before model calls or world writes, including
+when that work is scheduled for a future tick. Start a new game; there is no
+legacy-save migration and reads do not delete queued work or saved data.
+Character visibility, observation and dialogue histories remain available to
+the scene context projector. Persisted `agent_context` field names remain intact.
+The former multi-agent beta remains archived in the source repository under
+`multi-agent-beta-archive-2026-10` and `multi-agent-beta-archive-2026-10-r1`;
+see [PROVENANCE.md](PROVENANCE.md) for immutable commits.
 
 A store adapter must preserve snapshot/event/observation/pending-work fields and
 expected-version commit semantics. Durable settlement, request ownership and
