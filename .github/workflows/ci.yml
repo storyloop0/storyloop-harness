@@ -1,0 +1,25 @@
+name: Harness CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[test]' build
+      - run: python -m pytest tests -q
+      - run: python -m build --wheel
+      - name: Verify installed wheel outside checkout
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/harness-venv"
+          "$RUNNER_TEMP/harness-venv/bin/python" -m pip install dist/*.whl pytest
+          cp -r examples "$RUNNER_TEMP/harness-examples"
+          cp tests/test_import_boundary.py "$RUNNER_TEMP/test_import_boundary.py"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/harness-venv/bin/python" -I harness-examples/offline_turn.py
+          "$RUNNER_TEMP/harness-venv/bin/python" -I -m pytest test_import_boundary.py -q -k runtime
