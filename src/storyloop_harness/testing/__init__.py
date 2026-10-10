@@ -1,2 +1,3 @@
 from storyloop_harness.testing.memory import InMemoryGameStore
 from storyloop_harness.testing.offline_model import OfflineModel
+from storyloop_harness.testing.projection import project_scene_request
