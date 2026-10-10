@@ -4,9 +4,12 @@ from pathlib import Path
 
 def test_no_platform_imports():
     root = Path(__file__).parents[1] / 'src/storyloop_harness'
+    if not root.is_dir():
+        import importlib.util
+        root = Path(importlib.util.find_spec('storyloop_harness').origin).parent
     assert root.is_dir(), 'independent harness source missing'
     forbidden = ('story_harness', 'storyloop_platform', 'sqlalchemy', 'fastapi', 'mem0', 'langfuse')
-    for path in root.rglob('*.py'):
+    for path in [*root.rglob('*.py'), *(Path(__file__).parent.rglob('*.py'))]:
         for node in ast.walk(ast.parse(path.read_text(encoding='utf-8-sig'))):
             names = ([node.module or ''] if isinstance(node, ast.ImportFrom) else
                      [item.name for item in node.names] if isinstance(node, ast.Import) else [])

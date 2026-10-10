@@ -99,7 +99,7 @@ its expected-version commit contract.
 | `advanced` | Context projection, event, work and story-clock contracts for integrations |
 | `generation` | Structured model transport, formatting and action suggestions |
 | `telemetry`, `usage` | Tracing interfaces and scoped token usage, without pricing policy |
-| `testing` | In-memory store and deterministic offline model |
+| `testing` | In-memory store, deterministic offline model and detached scene request inspection |
 
 `TurnEngine.run_turn` accepts a `TurnInput` plus optional progress and campaign
 time bounds. `run_ready_work` drains supported queued work, including previously
@@ -108,6 +108,11 @@ snapshot, events committed by that invocation and its model usage.
 
 Keep request ownership, authentication, pricing and settlement in the calling
 application. Internal module paths are not extension APIs.
+
+For diagnostics and tests, `testing.project_scene_request(store, package, game_id,
+player_text, context_window_tokens=65536)` returns a deep copy of the runtime's
+projected request. It reads the save without generating a turn or writing to the
+store.
 
 ## Current boundaries
 
