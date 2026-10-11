@@ -179,7 +179,9 @@ class SingleCallGameSession:
                 await emit(progress, "segment", segment=segment.to_dict())
             return TurnOutcome(plan.decision, narration, observations,
                                processed.processed_work_ids, processed.snapshot,
-                               False, segments, remaining_work_ids=processed.remaining_work_ids)
+                               False, segments, remaining_work_ids=tuple(
+                                   work.work_id for work in self.store.ready_work(
+                                       game_id, processed.snapshot.tick)))
 
     def _validate_plan(self, before: Snapshot, plan: SceneTurn,
                        focus: tuple[str, ...], nearby: tuple[str, ...]) -> SceneTurn:

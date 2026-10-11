@@ -163,18 +163,25 @@ def test_projection_action_declarations_provenance_and_state_scope():
     assert any('action_rules' in str(item) for item in projection.report.decisions)
 
 
-def test_remaining_ready_work_is_public_and_durable():
+@pytest.mark.parametrize('max_steps,remaining_count', [(1, 1), (8, 0)])
+def test_remaining_ready_work_excludes_persisted_future_work(max_steps, remaining_count):
     from scene_fixtures import source_package
-    package = source_package()
+    from storyloop_harness.core.contracts import PendingWork
+
+    future = PendingWork('future-cue', 'scenario_cue', 100, 1, None, {})
+    package = replace(source_package(), initial_work=(future,))
     store = InMemoryGameStore()
     package.seed_game(store, 'game')
     model = StructuredModel(interaction='speech', action_id=None, status_changes=[],
         participants=['dockhand', 'vendor'],
         replies=[{'actor_id': who, 'speech': 'hello'} for who in ['dockhand', 'vendor']],
         options=[{'label': str(i), 'input': str(i)} for i in range(3)])
-    result = run(store, package, model, max_steps=1)
-    assert len(result.remaining_work_ids) == 1
+    result = run(store, package, model, max_steps=max_steps)
+    assert len(result.processed_work_ids) == (1 if max_steps == 1 else 2)
+    assert len(result.remaining_work_ids) == remaining_count
     assert result.remaining_work_ids == tuple(work.work_id for work in store.ready_work('game', result.snapshot.tick))
+    assert future in store.pending_work('game')
+    assert future.due_tick > result.snapshot.tick
 
 
 def test_effect_scalar_must_keep_exact_model_type():
