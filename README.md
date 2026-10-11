@@ -164,6 +164,21 @@ print(projection.report.to_dict())
 
 </details>
 
+## 小规模叙事实验
+
+安装 Harness 后，在仓库根目录运行：
+
+```sh
+python -m examples.evaluation --output result.json
+# 可选的原生 Langfuse 执行器（SDK 4.17.0）：
+python -m pip install -e '.[evaluation]'
+python -m examples.evaluation --langfuse --output result.json
+```
+
+- 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
+- `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
+- `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。
+
 ## 集成接口参考
 
 | 入口 | 用途 |
@@ -187,7 +202,7 @@ print(projection.report.to_dict())
 - 长局记忆、可复现的质量/成本对照与更强的执行恢复仍是后续方向。
 
 ```sh
-python -m pip install -e '.[test]' build
+python -m pip install -e '.[test,evaluation]' build
 python -m pytest tests -q
 python -m build --wheel
 ```

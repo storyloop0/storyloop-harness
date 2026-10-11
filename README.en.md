@@ -169,6 +169,21 @@ The inspected scope includes history after each recipient's checkpoint, the last
 
 </details>
 
+## Small narrative experiments
+
+From the repository root, after installing the harness:
+
+```sh
+python -m examples.evaluation --output result.json
+# Optional native Langfuse runner (SDK 4.17.0):
+python -m pip install -e '.[evaluation]'
+python -m examples.evaluation --langfuse --output result.json
+```
+
+- Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
+- `--langfuse` writes traces/scores via the [native experiment runner](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk); set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and optionally `LANGFUSE_BASE_URL`. Server ingestion is reported as unverified.
+- `--live` calls a real provider and incurs charges; set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, `STORY_MODEL_BASE_URL`. Fixtures establish runtime contracts, not narrative quality or character secrecy in shared model context. Edit the task's default `ContextBudget` for small budget comparisons.
+
 ## Integration reference
 
 | Surface | Purpose |
@@ -192,7 +207,7 @@ The inspected scope includes history after each recipient's checkpoint, the last
 - Long-session memory, reproducible quality/cost comparisons and stronger execution recovery remain development directions.
 
 ```sh
-python -m pip install -e '.[test]' build
+python -m pip install -e '.[test,evaluation]' build
 python -m pytest tests -q
 python -m build --wheel
 ```
