@@ -165,6 +165,55 @@ def test_streaming_sdk_option_is_included_at_final_wire_boundary():
 
     asyncio.run(run())
 
+def test_streaming_extra_body_override_matches_effective_openai_json_body():
+    from dataclasses import replace
+    from storyloop_harness.context.budget import estimate_request_envelope
+
+    async def run():
+        model = create_test_model('offline-test')
+        model.stream = True
+        model.parameters.parallel_tool_calls = False
+        model._parse_stream_response = lambda start, response: 'parsed offline stream'
+        model.client.chat.completions.create = AsyncMock(return_value=object())
+        messages = model._messages([{'role': 'user', 'content': 'synthetic override request'}])
+        tools = [{'type': 'function', 'function': {'name': 'synthetic_tool',
+                  'description': 'Synthetic tool.', 'parameters': {'type': 'object', 'properties': {}}}}]
+        extra_body = {'stream_options': {'include_usage': False,
+                                         'synthetic_padding': 'x' * 2000}}
+
+        await model._call_api(model.model, messages, tools=tools, context_budget=ContextBudget(),
+                              max_completion_tokens=4096, parallel_tool_calls=True,
+                              extra_body=extra_body)
+        wire = model.client.chat.completions.create.await_args.kwargs
+        assert wire['stream_options'] == {'include_usage': True}
+        assert wire['parallel_tool_calls'] is False
+        assert wire['extra_body'] == extra_body
+        # OpenAI merges extra_body into the request JSON with later key
+        # precedence, so its stream_options replaces AgentScope's default.
+        effective_body = {key: value for key, value in wire.items()
+                          if key not in ('messages', 'tools', 'extra_body')}
+        effective_body.update(wire['extra_body'])
+        actual = estimate_request_envelope(
+            wire['messages'], wire.get('tools'), ContextBudget(),
+            envelope_options=effective_body,
+        )
+
+        at_boundary = replace(ContextBudget(), context_window_tokens=actual.total_tokens)
+        await model._call_api(model.model, messages, tools=tools, context_budget=at_boundary,
+                              max_completion_tokens=4096, parallel_tool_calls=True,
+                              extra_body=extra_body)
+        assert model.client.chat.completions.create.await_count == 2
+
+        below_boundary = replace(at_boundary, context_window_tokens=actual.total_tokens - 1)
+        with pytest.raises(ContextBudgetExceeded) as error:
+            await model._call_api(model.model, messages, tools=tools, context_budget=below_boundary,
+                                  max_completion_tokens=4096, parallel_tool_calls=True,
+                                  extra_body=extra_body)
+        assert error.value.report.total_tokens == actual.total_tokens
+        assert model.client.chat.completions.create.await_count == 2
+
+    asyncio.run(run())
+
 @pytest.mark.parametrize('extra_body', [None, {'enable_thinking': False}])
 def test_sdk_allows_ordinary_provider_options(extra_body):
     async def run():

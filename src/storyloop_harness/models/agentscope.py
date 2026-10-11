@@ -96,12 +96,15 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             options.update(kwargs)
             options.pop("extra_body", None)
             extra_body = kwargs.get("extra_body") if "extra_body" in kwargs else self.extra_body
-            options.update(extra_body or {})
-            # AgentScope unconditionally installs this after generate_kwargs
-            # when streaming, so the guard must account for its final wire
-            # envelope (including its override order).
+            # AgentScope installs these after generate_kwargs when tools or
+            # streaming are enabled. OpenAI then merges extra_body into the
+            # JSON request with later-key precedence, so apply SDK defaults
+            # before that final merge.
+            if formatted_tools and not self.parameters.parallel_tool_calls:
+                options["parallel_tool_calls"] = False
             if self.stream:
                 options["stream_options"] = {"include_usage": True}
+            options.update(extra_body or {})
             report = estimate_request_envelope(formatted, formatted_tools, budget,
                                                envelope_options=options)
             enforce_window(report)
