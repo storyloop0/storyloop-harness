@@ -22,7 +22,7 @@ flowchart LR
     Result --> App
 ```
 
-Harness owns context projection, structured generation, scenario validation and event execution. The caller owns credentials, durable storage, request ownership and pricing. The bundled in-memory store and deterministic model let you explore these boundaries without a model key.
+Harness owns context projection, structured generation, scenario validation and event execution. The caller owns credentials, storage selection, request ownership and pricing. The bundled in-memory store and deterministic model let you explore these boundaries without a model key.
 
 ## How a turn works
 
@@ -33,8 +33,9 @@ flowchart TD
     Project -->|Required material cannot fit| Fail[Fail before model dispatch or world writes]
     Generate --> Validate[Validate and sanitize proposals]
     Generate -->|Generation error| Stop[Return error before proposal commit]
-    Validate -->|Rejected proposal| Stop
-    Validate --> Commit[Commit accepted events with expected version]
+    Validate -->|Rejected action| Rejected[Replace with deterministic rejection result]
+    Rejected --> Commit
+    Validate --> Commit[Commit adjudicated events with expected version]
     Commit -->|Store conflict or error| StoreError[Propagate store error]
     Commit --> Work[Drain ready work: speech and scenario cues]
     Work --> Output[Visible story and resulting snapshot]
@@ -42,7 +43,7 @@ flowchart TD
 
 An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Character replies are generated together and delivered through `single_npc_reply` work; each character does not run a ReAct loop.
 
-Validation can filter targets, replies and milestones, or replace invalid open-action effects with an unconfirmed attempt. Authored action rules adjudicate their own effects. Status changes remain proposals exposed through `proposed_status` for application settlement. A store error or later work failure needs caller handling: the entire turn is not promised to be one atomic transaction.
+Authored actions are adjudicated against scenario rules and use the authored result as canonical scene prose. Rejections replace prose and discard speculative consequences. Open actions can only change declared mutable fields. Eligible numeric status changes commit with the player event and are not reapplied on replay; the application owns account billing. Free-form generated text is not guaranteed factually consistent. Store errors and later work failures need caller handling: the whole turn is not atomic, and failure before its first commit can require another model call.
 
 ## Context you can inspect
 
@@ -78,6 +79,25 @@ Use a Python 3.12+ interpreter for `python`. The example uses a bundled syntheti
 scenario, an in-memory store and a deterministic model. It makes no provider
 requests and prints the story plus the resulting snapshot version.
 
+### Save and continue a story
+
+After installation, run these three commands. The second replays the same turn; the third attempts the action again.
+
+```sh
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-2 --text "break the window"
+```
+
+The first prints `window_broken: true`; the second keeps the same version with `model_calls: 0`; the third is rejected by the action rule. SQLite preserves world state, history, and pending work. The offline fixture recognizes only this fixed action and `hello`; it demonstrates execution and recovery.
+
+<details>
+<summary>Use a live model</summary>
+
+Set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, and `STORY_MODEL_BASE_URL`, then add `--live` to the command with a new turn ID and your own input. This needs an OpenAI-compatible endpoint supporting structured output and incurs provider charges. The example demonstrates credential/model wiring; endpoint compatibility still needs checking.
+
+</details>
+
 ### Use the turn API
 
 Run from the repository root after installation:
@@ -109,7 +129,7 @@ if __name__ == "__main__":
 
 To connect a live model, supply a `ModelPort` implementation; the
 `generation.CompatibleOpenAIChatModel` adapter uses AgentScope 2.0.9. The caller
-supplies credentials and routing. To persist games, implement `GameStore` and
+supplies credentials and routing. To persist games, use `storage.SQLiteGameStore` or implement `GameStore` and
 its expected-version commit contract.
 
 ## Inspect and configure the budget
@@ -159,14 +179,15 @@ The inspected scope includes history after each recipient's checkpoint, the last
 | `advanced` | Event, work and story-clock contracts |
 | `generation` | Structured model transport, formatting and action suggestions |
 | `telemetry`, `usage` | Tracing and scoped token usage, without pricing policy |
+| `storage` | Standard-library SQLite persistence with reopen and expected-version commits |
 | `testing` | In-memory store, offline model and detached request inspection |
 
-`run_turn` takes a `TurnInput`, optional progress and campaign time bounds. `run_ready_work` drains supported queued work. `TurnOutcome` includes visible output, a snapshot, events committed by that invocation and model usage. Internal module paths are not extension APIs.
+`run_turn` takes a `TurnInput`, optional progress and campaign time bounds. `run_ready_work` drains supported queued work. `TurnOutcome` includes visible output, a snapshot, events committed by that invocation, model usage, and `remaining_work_ids` for ready work left at the step limit. Internal module paths are not extension APIs.
 
 ## Current limits and development
 
 - Legacy saves with pending `npc_reply` work are rejected before generation or world writes; recreate them.
-- Durable persistence and cross-process coordination require a caller-supplied store and application implementation.
+- The SQLite adapter provides per-commit transactions and version conflict checks; applications own cross-process task claims and conflict retries.
 - Saved-turn replay and expected-version commits do not establish end-to-end billing recovery or distributed execution guarantees.
 - Long-session memory, reproducible quality/cost comparisons and stronger execution recovery remain development directions.
 

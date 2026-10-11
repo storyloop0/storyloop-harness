@@ -22,7 +22,7 @@ flowchart LR
     Result --> App
 ```
 
-Harness 负责上下文投影、结构化生成、剧本校验和事件执行；调用方负责凭据、持久存储、请求归属与价格策略。内置的内存存储和确定性模型，让你无需模型密钥就能体验这些边界。
+Harness 负责上下文投影、结构化生成、剧本校验和事件执行；调用方负责凭据、存储选型、请求归属与价格策略。内置的内存存储和确定性模型，让你无需模型密钥就能体验这些边界。
 
 ## 一个回合如何执行
 
@@ -33,8 +33,9 @@ flowchart TD
     Project -->|必要材料无法放入窗口| Fail[在模型调用和世界写入前失败]
     Generate --> Validate[校验并修正提案]
     Generate -->|生成异常| Stop[在提案提交前返回错误]
-    Validate -->|提案被拒绝| Stop
-    Validate --> Commit[按预期版本提交获准事件]
+    Validate -->|动作被拒绝| Rejected[替换为确定性拒绝结果]
+    Rejected --> Commit
+    Validate --> Commit[按预期版本提交裁决后的事件]
     Commit -->|存储冲突或异常| StoreError[向调用方传递存储错误]
     Commit --> Work[处理就绪工作：角色发言与场景提示]
     Work --> Output[可见故事与更新后的快照]
@@ -42,7 +43,7 @@ flowchart TD
 
 普通 `single_call` 回合采用一次结构化场景生成阶段，再执行确定性工作。传输重试和其他定时生成任务可能产生额外模型请求。角色回复一起生成，通过 `single_npc_reply` 工作交付；每个角色没有独立的 ReAct 循环。
 
-校验会筛选目标、回复和里程碑，也会把无效的开放动作效果改成尚未确认结果的尝试。预设动作由剧本规则裁决效果。状态变化仍是提案，调用方可通过 `proposed_status` 读取并结算。存储异常或后续工作失败需要调用方处理；整个回合并不保证是一个原子事务。
+预设动作按剧本规则裁决，成功正文使用作者声明的结果；拒绝时替换正文并丢弃推测的后果。开放动作只能修改声明的可变字段。合格的数值状态变化与玩家事件一起提交，重复回合不会再应用一次；积分账务由应用负责。自由生成的文字仍不保证句句符合事实。存储异常或后续工作失败需要调用方处理；整个回合不保证原子事务，首次提交前失败可能重新调用模型。
 
 ## 可以检查的上下文
 
@@ -76,6 +77,25 @@ python examples/offline_turn.py
 
 请使用 Python 3.12+。示例采用仓库内的合成剧本、内存存储和确定性模型，不请求模型服务，输出故事与最终快照版本。
 
+### 保存并继续一个故事
+
+安装后运行下面三条命令：第二条重放同一个回合，第三条再次尝试同一动作。
+
+```sh
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-2 --text "break the window"
+```
+
+第一次输出 `window_broken: true`；第二次版本不变、`model_calls: 0`；第三次由规则拒绝重复破坏。SQLite 文件保留世界、经历和待办。离线模型只识别这条固定动作与 `hello`，用于验证执行和恢复。
+
+<details>
+<summary>换成真实模型</summary>
+
+设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL` 环境变量，再给上述命令加 `--live`，使用新回合 ID 和自己的输入。需要支持结构化输出的 OpenAI 兼容端点；会产生供应商调用费用。示例代码展示凭据与模型装配，不承诺所有兼容端点都可直接使用。
+
+</details>
+
 ### 使用回合 API
 
 安装后在仓库根目录运行：
@@ -105,7 +125,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-连接真实模型时提供 `ModelPort` 实现；`generation.CompatibleOpenAIChatModel` 适配器使用 AgentScope 2.0.9，凭据与路由由调用方提供。持久化游戏时实现 `GameStore` 及其预期版本提交契约。
+连接真实模型时提供 `ModelPort` 实现；`generation.CompatibleOpenAIChatModel` 适配器使用 AgentScope 2.0.9，凭据与路由由调用方提供。持久化游戏可使用 `storage.SQLiteGameStore`，或实现 `GameStore` 及其预期版本提交契约。
 
 ## 检查上下文与配置预算
 
@@ -154,14 +174,15 @@ print(projection.report.to_dict())
 | `advanced` | 事件、工作与故事时钟契约 |
 | `generation` | 结构化模型传输、格式化与动作建议 |
 | `telemetry`、`usage` | 追踪与作用域内 Token 用量，不含价格策略 |
+| `storage` | 标准库 SQLite 持久存储，支持关闭后继续和预期版本提交 |
 | `testing` | 内存存储、离线模型与独立请求检查 |
 
-`run_turn` 接收 `TurnInput`，可选进度回调与故事时间上限；`run_ready_work` 处理支持的待办工作。`TurnOutcome` 包含可见输出、快照、本次调用提交的事件和模型用量。内部模块路径不属于扩展 API。
+`run_turn` 接收 `TurnInput`，可选进度回调与故事时间上限；`run_ready_work` 处理支持的待办工作。`TurnOutcome` 包含可见输出、快照、本次调用提交的事件、模型用量，以及步数上限后仍待处理的 `remaining_work_ids`。内部模块路径不属于扩展 API。
 
 ## 当前限制与开发
 
 - 带有旧 `npc_reply` 待办的存档会在生成和世界写入前被拒绝，需要重建。
-- 持久存储与跨进程协调需要调用方实现存储与应用层机制。
+- SQLite 适配器提供单次提交的事务和版本冲突检查；跨进程任务领取与冲突重试由应用负责。
 - 已存回合重放与预期版本提交，不代表端到端计费恢复或分布式执行保证。
 - 长局记忆、可复现的质量/成本对照与更强的执行恢复仍是后续方向。
 
