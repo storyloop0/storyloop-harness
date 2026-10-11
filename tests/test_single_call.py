@@ -9,7 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SingleSceneGenerator
+from storyloop_harness.agents.scene_turn import SingleSceneGenerator
+from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.context.history import history_selection
 from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.contracts import AgentContextEntry, Observation, WorldEvent
 from storyloop_harness.core.open_actions import parse_mutable_fields, validate_open_effects
@@ -224,8 +226,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
                                          f"第{index}段新故事。", index)
                        for index in range(1, 14))
 
-        recalled = SceneContextProjector._history(
-            entries, "第二天的约定是什么", recent=10, older=1, excerpt_chars=700)
+        recalled = [row for _, row, selected, _ in history_selection(
+            entries, "第二天的约定是什么", recent=10, older=1, excerpt_chars=700) if selected]
 
         self.assertIn("约定第二天在港口见", recalled[0]["text"])
 
@@ -235,7 +237,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
                 self.schema = None
                 self.calls = 0
 
-            async def __call__(self, messages, *, structured_model):
+            async def __call__(self, messages, *, structured_model, **kwargs):
                 self.calls += 1
                 self.schema = structured_model
                 return SimpleNamespace(metadata={

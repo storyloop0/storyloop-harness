@@ -8,7 +8,7 @@ from pathlib import Path
 import unittest
 
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector
+from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.contracts import Observation, WorldEvent
 from storyloop_harness.advanced import estimate_tokens
@@ -79,13 +79,11 @@ class SceneResponderContextTests(unittest.TestCase):
 
     def test_budget_exhaustion_cannot_erase_all_responder_role_cards(self):
         before = self.store.load("game")
-        minimal = deepcopy(self.projector.project(before, "").request)
-        minimal["public_setting"] = []
-        for item in minimal["npc_contexts"]:
-            item["role_card"] = ""
-        # Fill the real estimator's 4,800-token budget with mandatory envelope
-        # and player text: the old loop can only fit by emptying every role card.
-        remaining = 4800 - estimate_tokens(json.dumps(minimal, ensure_ascii=False))
-        constrained = SceneContextProjector(self.store, self.package, context_window_tokens=1024)
-        with self.assertRaisesRegex(ValueError, "responder role"):
-            constrained.project(before, "x" * remaining)
+        from storyloop_harness.context import ContextBudget, ContextBudgetExceeded
+        constrained = SceneContextProjector(self.store, self.package,
+            context_budget=ContextBudget(context_window_tokens=2000, output_tokens=100))
+        with self.assertRaises(ContextBudgetExceeded) as error:
+            constrained.project(before, 'hello')
+        roles = [decision for decision in error.exception.report.decisions if decision.source_kind == 'role']
+        self.assertTrue(roles)
+        self.assertTrue(all(decision.selected and decision.estimated_tokens_after > 0 for decision in roles))

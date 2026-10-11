@@ -8,7 +8,7 @@ import pytest
 from scene_fixtures import EXAMPLE, FakeGenerator, a_turn
 
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector
+from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.agents.scene_schema import NarrativeTurn, SourceNarrativeTurn
 from storyloop_harness.runtime.schedule import advance_time
 from storyloop_harness.runtime.story_clock import StoryClock

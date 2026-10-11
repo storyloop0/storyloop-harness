@@ -1,5 +1,6 @@
 """Default single-call engine facade."""
 from contextvars import ContextVar
+from storyloop_harness.context import ContextBudget, ContextProjection
 from dataclasses import replace
 from storyloop_harness.contracts import TurnInput, TurnOutcome
 from storyloop_harness.ports import GameStore, ModelPort, CampaignContext
@@ -9,7 +10,8 @@ from storyloop_harness.runtime.runner import RunResult
 from storyloop_harness.adapters.telemetry import Telemetry
 from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.world.scenario import ScenarioPackage
-from storyloop_harness.agents.scene_turn import SingleSceneGenerator, SceneContextProjector
+from storyloop_harness.agents.scene_turn import SingleSceneGenerator
+from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
 
@@ -34,7 +36,7 @@ class _RecordingStore:
 class TurnEngine:
     def __init__(self, store: GameStore, package: ScenarioPackage, model: ModelPort,
                  *, clock: StoryClock | None = None, program: CampaignContext | None = None,
-                 max_responders: int = 3, context_window_tokens: int = 65536,
+                 max_responders: int = 3, context_budget: ContextBudget | None = None,
                  max_steps: int = 8, telemetry: Telemetry | None = None):
         self.package = package
         self.store = _RecordingStore(store)
@@ -42,17 +44,26 @@ class TurnEngine:
             self.store, package, SingleSceneGenerator(model, package, telemetry),
             SceneContextProjector(self.store, package, clock=clock, program=program,
                                   max_responders=max_responders,
-                                  context_window_tokens=context_window_tokens),
+                                  context_budget=context_budget),
             clock=clock, max_steps=max_steps, telemetry=telemetry)
 
-    async def run_turn(self, turn: TurnInput, *, progress: TurnProgress | None = None,
-                       max_tick: int | None = None) -> TurnOutcome:
+    def _snapshot_for(self, turn: TurnInput):
         if turn.scenario_version != self.package.version:
             raise ValueError('scenario version does not match engine package')
         snapshot = self.store.load(turn.game_id)
         scenario = snapshot.data.get('scenario', {})
         if scenario.get('id') != self.package.package_id or scenario.get('version') != self.package.version:
             raise ValueError('saved scenario identity/version does not match engine package')
+        return snapshot
+
+    def project_context(self, turn: TurnInput) -> ContextProjection:
+        """Inspect a detached ordinary-scene request without generation or writes."""
+        snapshot = self._snapshot_for(turn)
+        return self.session.projector.project(snapshot, turn.player_text)
+
+    async def run_turn(self, turn: TurnInput, *, progress: TurnProgress | None = None,
+                       max_tick: int | None = None) -> TurnOutcome:
+        self._snapshot_for(turn)
         events = []
         token = self.store.records.set(events)
         try:

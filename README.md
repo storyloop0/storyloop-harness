@@ -96,7 +96,8 @@ its expected-version commit contract.
 | --- | --- |
 | Top-level package | `ScenarioPackage`, `TurnEngine`, `TurnInput`, `TurnOutcome`, `GameStore`, `ModelPort`, `CampaignContext` |
 | `contracts`, `ports` | Turn data and injected model/store/campaign protocols |
-| `advanced` | Context projection, event, work and story-clock contracts for integrations |
+| `context` | `ContextBudget`, `ContextProjection`, `ProjectionReport`, `MaterialDecision`, `ContextBudgetExceeded` |
+| `advanced` | Event, work and story-clock contracts for integrations |
 | `generation` | Structured model transport, formatting and action suggestions |
 | `telemetry`, `usage` | Tracing interfaces and scoped token usage, without pricing policy |
 | `testing` | In-memory store, deterministic offline model and detached scene request inspection |
@@ -109,10 +110,62 @@ snapshot, events committed by that invocation and its model usage.
 Keep request ownership, authentication, pricing and settlement in the calling
 application. Internal module paths are not extension APIs.
 
-For diagnostics and tests, `testing.project_scene_request(store, package, game_id,
-player_text, context_window_tokens=65536)` returns a deep copy of the runtime's
-projected request. It reads the save without generating a turn or writing to the
-store.
+### Inspect context and configure its budget
+
+Run this offline example from the repository root:
+
+```python
+from storyloop_harness import ScenarioPackage, TurnEngine, TurnInput
+from storyloop_harness.context import ContextBudget, ContextBudgetExceeded
+from storyloop_harness.testing import InMemoryGameStore, OfflineModel
+
+package = ScenarioPackage.load("examples/freeform")  # synthetic scenario
+store = InMemoryGameStore()
+package.seed_game(store, "inspection")
+engine = TurnEngine(store, package, OfflineModel(), context_budget=ContextBudget(
+    context_window_tokens=65536, output_tokens=4096,
+    safety_margin_tokens=256, max_material_tokens=16000,
+))
+projection = engine.project_context(
+    TurnInput("inspection", "Hello", "inspect-1", package.version)
+)
+print(projection.report.to_dict())
+```
+
+`project_context` is synchronous and read-only. It uses the runtime's clock,
+story program, responder limit and explicit player preference scope. Its detached
+request contains story material; its immutable report contains source IDs, owners,
+state/checkpoint versions, fields, selection reasons and estimated sizes without
+source prose. Keep both developer-side. Reports are absent from player turn output
+and stored story events; default telemetry records aggregate counts and estimates.
+
+The inspected scope is history after each recipient's checkpoint, player inputs
+from the last four turns, the last six player observations, visible worldbook
+entries, public/system source facts and milestone candidates, and private role
+material/history for selected responders. Unselected actors' private context and
+other saves are outside that scope. `selected` and `truncated` are independent;
+`omission_reason` records rank/item limits, field clipping (`field_limit`), or
+material/window budget trimming. Source facts and milestone cues yield whole
+before recent experiences; prompt omission does not change milestone eligibility.
+
+Estimates use `utf8-conservative-v1`, a conservative character/UTF-8 heuristic,
+not a provider tokenizer measurement. `scene-projection-v1` enforces the independent
+serialized material cap and the complete estimated request window: system prompt,
+message framing/escaping, expanded output schema, transport allowance, output
+reserve and safety margin. The supported AgentScope adapter checks the actual SDK
+formatted envelope before HTTP and sends one effective `max_completion_tokens`
+cap. Custom `ModelPort` implementations must honor that bounded-call contract.
+
+All public rules, source resolutions, player input, authoritative state and a
+nonempty selected role identity floor are required. If they cannot fit,
+`ContextBudgetExceeded` carries a content-free report and the turn fails before
+model dispatch or world writes. A changed inspection request is re-estimated on
+generation. This policy covers ordinary scene requests and each transport attempt;
+it does not measure whole-campaign spend or provide hard isolation between roles.
+
+`testing.project_scene_request(store, package, game_id, player_text,
+context_budget=ContextBudget())` returns only a detached request dictionary using
+the same projector; it also accepts `clock`, `program` and `max_responders`.
 
 ## Current boundaries
 
@@ -139,8 +192,8 @@ The CI workflow also installs a built wheel outside the checkout and runs the
 offline example. Tests use deterministic models; they do not establish the
 quality of live-model narrative output.
 
-Further work focuses on explainable context selection and budgets, long-session
-memory, reproducible quality/cost comparisons, and stronger execution recovery.
+Further work focuses on long-session memory, reproducible quality/cost comparisons,
+and stronger execution recovery.
 These are development directions, not completed guarantees.
 
 ## License

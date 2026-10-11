@@ -8,7 +8,8 @@ from openai.types.chat import ChatCompletion
 
 from model_helpers import create_test_model
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SingleSceneGenerator
+from storyloop_harness.agents.scene_turn import SingleSceneGenerator
+from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.usage import collect_usage
 from storyloop_harness.world.scenario import ScenarioPackage
 
