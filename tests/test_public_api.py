@@ -119,7 +119,7 @@ def test_public_engine_accepts_platform_settings_and_bounded_progress():
     assert result.snapshot.tick == 0
     assert progress
     assert engine.proposed_options('settings', 'one')
-    assert engine.proposed_status('settings', 'one') == []
+    assert not hasattr(engine, 'proposed_status')
     assert asyncio.run(engine.run_ready_work('settings'))
 
 

@@ -83,7 +83,3 @@ class TurnEngine:
                          authored: tuple[ActionOption, ...] = ()) -> tuple[ActionOption, ...]:
         """Read validated action suggestions persisted by a completed turn."""
         return self.session.proposed_options(game_id, turn_id, authored)
-
-    def proposed_status(self, game_id: str, turn_id: str) -> list[dict[str, object]]:
-        """Read persisted status proposals for the product's status settlement."""
-        return self.session.proposed_status(game_id, turn_id)

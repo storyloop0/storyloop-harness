@@ -8,6 +8,8 @@ from storyloop_harness.runtime.player_preferences import current_player_preferen
 from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.world.scenario import ScenarioPackage
 from storyloop_harness.world.status_fields import project_status_fields
+from storyloop_harness.core.actions import _read
+from storyloop_harness.runtime.action_resolution import overlaps
 
 class SceneContextProjector:
     """Select scoped candidates, retaining IDs through clipping and fitting."""
@@ -156,6 +158,37 @@ class SceneContextProjector:
                     origin((field,), request[field], f'program:current_action_context:{source_field}')
         updatable = {field.field_id: field for field in self.package.status_fields
                      if field.automatically_updated}
+        request['actions'] = []
+        for rule in self.package.action_rules.values():
+            row = {'id': rule.action_id, 'label': rule.label,
+                   'available': location == rule.location
+                   and _read(snapshot.data, rule.when_path) == rule.when_value}
+            index = len(request['actions'])
+            request['actions'].append(row)
+            for key, value in row.items():
+                origin(('actions', index, key), value,
+                       f'package:action_rules:{rule.action_id}:{key}')
+            origin(('actions', index, 'available'), row['available'],
+                   'snapshot:actors:player:location',
+                   f'snapshot:{":".join(rule.when_path)}')
+        request['mutable_state'] = []
+        reserved = [field.path for field in self.package.status_fields if field.automatically_updated]
+        reserved.extend([('story_progress',), ('player_knowledge',)])
+        for field in self.package.mutable_fields:
+            if any(overlaps(field.path, path) for path in reserved):
+                continue
+            current = _read(snapshot.data, field.path)
+            row = {'path': list(field.path), 'current': current,
+                   'next_values': list(field.next_values(current))}
+            index = len(request['mutable_state'])
+            request['mutable_state'].append(row)
+            for key, value in row.items():
+                origin(('mutable_state', index, key), value,
+                       f'package:mutable_fields:{":".join(field.path)}:{key}')
+            origin(('mutable_state', index, 'current'), current,
+                   f'snapshot:{":".join(field.path)}')
+            origin(('mutable_state', index, 'next_values'), row['next_values'],
+                   f'snapshot:{":".join(field.path)}')
         request["status_fields"] = [
             {**row, "description": updatable[row["id"]].description,
              "max_delta": updatable[row["id"]].max_delta}
