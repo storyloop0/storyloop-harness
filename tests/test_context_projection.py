@@ -103,6 +103,12 @@ def test_public_engine_inspects_actual_clock_program_preferences_and_validates()
     assert result.request['time_period'] is not None
     assert result.request['current_story_scene'] == 'test-scene'
     assert result.request['player_style_preferences'] == ['patient style']
+    origins = {d.field: d.source_id for d in result.report.decisions}
+    assert origins['current_story_scene'] == 'program:current_action_context:scene'
+    assert origins['current_story_goal'] == 'program:current_action_context:goal'
+    assert origins['player_style_preferences'] == 'preferences:current_player_preferences'
+    assert any(d.field == 'nearby_people.guide' and d.source_id == 'package:actor_names:guide'
+               for d in result.report.decisions)
     assert result.report.output_tokens == 321
     assert store.load('game') == before
     with pytest.raises(ValueError, match='version'):
@@ -179,6 +185,46 @@ def test_recent_zero_and_excerpt_limit_do_not_select_all_history():
     rows = list(history_selection(entries,'missing',recent=0,older=1,excerpt_chars=40))
     assert sum(selected for _,_,selected,_ in rows) == 1
     assert all(len(row['text']) == 40 for _,row,_,_ in rows)
+
+
+def test_derived_origins_follow_clock_tone_status_and_cast_sources():
+    from storyloop_harness.runtime.story_clock import StoryClock
+    from storyloop_harness.world.status_fields import StatusField
+    store, base = fixture()
+    package = replace(base, story_blueprint=base.story_blueprint.model_copy(
+        update={'source_resolutions': ['PRIVATE_RESOLUTION']}), status_fields=(StatusField('energy', 'Energy',
+        ('player_profile', 'energy'), minimum=0, maximum=10, max_delta=2),))
+    snapshot = store.load('game')
+    snapshot.data['player_profile'] = {'energy': 5}
+    snapshot.data['story_setup'] = {'tone': 'slow'}
+    snapshot.data['campaign'] = {'choices': {'route': 'left'}, 'messages': {'guide': 'PRIVATE_MESSAGE'}}
+    snapshot.data['player_knowledge'] = {'seen_actor_ids': ['guide'], 'named_actor_ids': ['guide']}
+    snapshot.data['actor_profiles'] = {'guide': {'name': 'Generated', 'public_profile': 'PRIVATE_APPEARANCE'}}
+    result = SceneContextProjector(store, package, clock=StoryClock(8)).project(snapshot, 'hello')
+    def origins(field):
+        return {d.source_id for d in result.report.decisions if d.field == field}
+    assert origins('day') == {'snapshot:tick', 'clock:ticks_per_day'}
+    assert origins('time_period') == {'snapshot:tick', 'clock:ticks_per_day', 'clock:PERIODS'}
+    assert origins('source_story_tone') == {'snapshot:story_setup:tone', 'package:story_blueprint:setup:tone_options:slow:guidance'}
+    assert origins('source_resolutions') == {'package:story_blueprint:source_resolutions'}
+    assert origins('player_recorded_choices') == {'snapshot:campaign:choices'}
+    assert origins('player_sent_messages') == {'snapshot:campaign:messages'}
+    assert origins('status_fields.0.value') == {'snapshot:player_profile:energy'}
+    assert 'package:status_fields:energy:label' in origins('status_fields.0.label')
+    guide = next(i for i, row in enumerate(result.request['public_cast']) if row['id'] == 'guide')
+    assert origins(f'public_cast.{guide}.name') == {'snapshot:actor_profiles:guide:name'}
+    assert origins(f'public_cast.{guide}.appearance') == {'snapshot:actor_profiles:guide:public_profile'}
+    assert origins(f'public_cast.{guide}.seen_by_player') == {'snapshot:player_knowledge:seen_actor_ids'}
+    assert all(d.state_version == snapshot.version for d in result.report.decisions if d.source_kind == 'snapshot')
+    assert not any(d.source_id in {'snapshot:public_cast', 'snapshot:status_fields', 'snapshot:day',
+                                  'package:source_story_tone', 'package:source_resolutions'}
+                   for d in result.report.decisions)
+    assert 'PRIVATE_APPEARANCE' not in json.dumps(result.report.to_dict())
+    assert 'PRIVATE_RESOLUTION' not in json.dumps(result.report.to_dict())
+    assert 'PRIVATE_MESSAGE' not in json.dumps(result.report.to_dict())
+    snapshot.data['story_setup']['tone'] = 'missing'
+    other = SceneContextProjector(store, package, clock=StoryClock(8)).project(snapshot, 'hello')
+    assert not any(d.source_id.endswith(':slow:guidance') for d in other.report.decisions)
 
 
 def test_prompt_milestone_omission_preserves_backend_eligibility():

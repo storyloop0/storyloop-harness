@@ -24,6 +24,11 @@ class SceneContextProjector:
 
     def project(self, snapshot: Snapshot, player_text: str) -> ContextProjection:
         selection = Selection()
+        def origin(path, value, *sources, owner=None):
+            for source in sources:
+                kind = source.split(':', 1)[0]
+                selection.add(kind, source, path, value, owner=owner,
+                    version=snapshot.version if kind == 'snapshot' else None)
         actors = snapshot.data.get("actors", {})
         generated_profiles = snapshot.data.get("actor_profiles", {})
         if not isinstance(generated_profiles, dict):
@@ -125,6 +130,30 @@ class SceneContextProjector:
             "recent_visible_beats": [],
             "player_style_preferences": list(current_player_preferences()),
         }
+        origin(('player_action',), player_text, 'turn_input:player_text')
+        origin(('presentation_mode',), request['presentation_mode'], 'package:presentation_mode')
+        origin(('location',), location, 'snapshot:actors:player:location', owner='player')
+        origin(('tick',), snapshot.tick, 'snapshot:tick')
+        origin(('player_profile',), request['player_profile'], 'snapshot:player_profile', owner='player')
+        if self.clock:
+            origin(('time_period',), request['time_period'], 'snapshot:tick',
+                   'clock:ticks_per_day', 'clock:PERIODS')
+        if request['player_style_preferences']:
+            origin(('player_style_preferences',), request['player_style_preferences'],
+                   'preferences:current_player_preferences', owner='player')
+        if self.package.story_blueprint is None:
+            if request['day'] is not None:
+                origin(('day',), request['day'], 'snapshot:campaign:day')
+            for actor_id in nearby:
+                profile = generated_profiles.get(actor_id)
+                source = (f'snapshot:actor_profiles:{actor_id}:name' if isinstance(profile, dict)
+                          and isinstance(profile.get('name'), str) else f'package:actor_names:{actor_id}')
+                origin(('nearby_people', actor_id), actor_name(actor_id), source,
+                       f'snapshot:actors:{actor_id}:location', 'snapshot:actors:player:location', owner=actor_id)
+            for field, source_field in (('current_story_scene', 'scene'),
+                                        ('current_story_goal', 'goal'), ('story_anchors', 'anchors')):
+                if request[field]:
+                    origin((field,), request[field], f'program:current_action_context:{source_field}')
         updatable = {field.field_id: field for field in self.package.status_fields
                      if field.automatically_updated}
         request["status_fields"] = [
@@ -133,6 +162,16 @@ class SceneContextProjector:
             for row in project_status_fields(self.package.status_fields, snapshot.data)
             if row["id"] in updatable
         ]
+        for index, row in enumerate(request['status_fields']):
+            spec = updatable[row['id']]
+            for key, value in row.items():
+                source_field = {'id': 'field_id', 'min': 'minimum', 'max': 'maximum'}.get(key, key)
+                sources = ([f'snapshot:{":".join(spec.path)}'] if key == 'value'
+                           else [f'package:status_fields:{spec.field_id}:{source_field}'])
+                origin(('status_fields', index, key), value, *sources)
+            if spec.when_path:
+                origin(('status_fields', index, 'id'), row['id'],
+                       f'snapshot:{":".join(spec.when_path)}', f'package:status_fields:{spec.field_id}:when_equals')
         blueprint = self.package.story_blueprint
         if blueprint is not None:
             knowledge = snapshot.data.get("player_knowledge", {})
@@ -144,8 +183,12 @@ class SceneContextProjector:
                 "seen_actor_ids": seen_ids if isinstance(seen_ids, list) else [],
                 "named_actor_ids": named_ids if isinstance(named_ids, list) else [],
             }
+            for key, value in request['player_identity_knowledge'].items():
+                origin(('player_identity_knowledge', key), value, f'snapshot:player_knowledge:{key}', owner='player')
             day = snapshot.tick // self.clock.ticks_per_day + 1 if self.clock else 1
             request["day"] = day
+            origin(('day',), day, *(['snapshot:tick', 'clock:ticks_per_day'] if self.clock
+                                  else ['projection:source_day_default']))
             setup = snapshot.data.get("story_setup", {})
             tone_id = setup.get("tone") if isinstance(setup, dict) else None
             tone = next((item.guidance for item in blueprint.setup.tone_options
@@ -153,6 +196,8 @@ class SceneContextProjector:
             request['source_story_facts'] = []
             self._collect_facts(selection, blueprint, day, player_text)
             request["source_resolutions"] = blueprint.source_resolutions
+            if blueprint.source_resolutions:
+                origin(('source_resolutions',), blueprint.source_resolutions, 'package:story_blueprint:source_resolutions')
             progress = snapshot.data.get("story_progress", {})
             completed = progress.get("completed", {}) if isinstance(progress, dict) else {}
             request['source_story_milestones'] = []
@@ -170,6 +215,10 @@ class SceneContextProjector:
                     selected=selected, reason='current' if step.day == day else 'overdue',
                     omission=None if selected else omission, optional=True, group=True)
             request["source_story_tone"] = tone
+            if isinstance(setup, dict) and 'tone' in setup:
+                origin(('source_story_tone',), tone, 'snapshot:story_setup:tone')
+            if any(item.id == tone_id for item in blueprint.setup.tone_options):
+                origin(('source_story_tone',), tone, f'package:story_blueprint:setup:tone_options:{tone_id}:guidance')
             request["public_cast"] = [
                 {"id": actor_id, "name": actor_name(actor_id),
                  "seen_by_player": actor_id in seen_ids,
@@ -178,6 +227,18 @@ class SceneContextProjector:
                                 if isinstance(generated_profiles.get(actor_id), dict) else "")}
                 for actor_id in nearby
             ]
+            for index, row in enumerate(request['public_cast']):
+                actor_id = row['id']
+                profile = generated_profiles.get(actor_id)
+                origin(('public_cast', index, 'id'), actor_id, f'package:actor_cards:{actor_id}',
+                       f'snapshot:actors:{actor_id}:location', 'snapshot:actors:player:location', owner=actor_id)
+                name_source = (f'snapshot:actor_profiles:{actor_id}:name' if isinstance(profile, dict)
+                               and isinstance(profile.get('name'), str) else f'package:actor_names:{actor_id}')
+                origin(('public_cast', index, 'name'), row['name'], name_source, owner=actor_id)
+                origin(('public_cast', index, 'appearance'), row['appearance'],
+                       f'snapshot:actor_profiles:{actor_id}:public_profile', owner=actor_id)
+                for field, key in (('seen_by_player', 'seen_actor_ids'), ('name_known_to_player', 'named_actor_ids')):
+                    origin(('public_cast', index, field), row[field], f'snapshot:player_knowledge:{key}', owner=actor_id)
             request["nearby_people"] = {}
             request["current_story_scene"] = ""
             request["current_story_goal"] = ""
@@ -188,16 +249,9 @@ class SceneContextProjector:
                 key: value for key, value in campaign.get("messages", {}).items()
                 if isinstance(key, str) and isinstance(value, str) and value
             } if isinstance(campaign.get("messages"), dict) else {}
-        managed = {item.path[0] for item in selection.items if item.path}
-        # Singleton references identify package/snapshot fields, never their prose.
-        for field, value in request.items():
-            if field not in managed and value not in ('', [], {}, None):
-                kind = ('turn_input' if field == 'player_action' else 'preferences' if field == 'player_style_preferences'
-                        else 'program' if field in {'current_story_scene', 'current_story_goal', 'story_anchors'}
-                        else 'package' if field in {'presentation_mode', 'source_resolutions', 'source_story_tone'} else 'snapshot')
-                source_id = 'turn_input:player_text' if field == 'player_action' else f'{kind}:{field}'
-                selection.add(kind, source_id, (field,), value,
-                    version=snapshot.version if kind == 'snapshot' else None)
+            for field, source_field in (('player_recorded_choices', 'choices'), ('player_sent_messages', 'messages')):
+                if request[field]:
+                    origin((field,), request[field], f'snapshot:campaign:{source_field}', owner='player')
 
         return selection.fit(request, self.package, self.context_budget, nearby, focus)
 
