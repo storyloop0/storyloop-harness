@@ -185,7 +185,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         result = await session.run_turn("game", "打破窗户", "turn-1")
 
         self.assertFalse(result.snapshot.data["world"]["shop_window"]["broken"])
-        self.assertEqual(self.store.event_details("game", "turn-1:action")["outcome"], "attempted")
+        self.assertEqual(self.store.event_details("game", "turn-1:action")["outcome"], "rejected")
         self.assertEqual(generator.calls, 1)
 
     async def test_completed_activity_does_not_refill_old_scene_options(self):
@@ -244,6 +244,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
                     "prose": "你和码头工做完饭，又坐下来吃了晚餐。",
                     "participants": ["dockhand"],
                     "interaction": "action",
+                    "action": {"status": "occurred"},
                     "witnessed": "玩家和码头工一起做饭并吃了晚餐。",
                     "memories": [
                         {"actor_id": "dockhand", "fact": "一起做饭并吃了晚餐。"},
@@ -255,7 +256,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         model = CapturingModel()
         context = SceneContextProjector(self.store, self.package).project(
             self.store.load("game"), "我和码头工做饭并吃饭")
-        self.assertNotIn("mutable_state", context.request)
+        self.assertEqual(context.request["mutable_state"], [])
+        self.assertTrue(context.request["actions"])
         self.assertNotIn("updatable_status", context.request)
         self.assertNotIn("authored_action_leads", context.request)
         self.assertNotIn("recent_suggested_options", context.request)
@@ -270,7 +272,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 1)
         self.assertEqual(set(model.schema.model_fields) - {"prose"},
                          {"replies", "options", "memories", "participants",
-                          "interaction", "duration", "delivery", "witnessed", "status_changes"})
+                          "interaction", "duration", "delivery", "witnessed", "status_changes",
+                          "action_id", "entry_id", "action"})
         self.assertEqual(turn.prose, "你和码头工做完饭，又坐下来吃了晚餐。")
         self.assertEqual(outcome.narration, turn.prose)
         self.assertEqual(turn.action.effects, [])
@@ -279,7 +282,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.channel == "shared_experience"
                              for item in self.store.observations_for("game", "unknown")))
 
-    async def test_bad_action_sidecar_never_replaces_complete_story(self):
+    async def test_rejected_action_sidecar_replaces_successful_story(self):
         prose = "你和码头工做完饭，端上桌，两人坐下吃了晚餐。"
         generator = FakeGenerator(a_turn(
             story_first=True,
@@ -293,7 +296,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         outcome = await self.session(generator).run_turn(
             "game", "我和码头工做饭并吃饭", "turn-story-first")
 
-        self.assertEqual(outcome.narration, prose)
+        self.assertNotEqual(outcome.narration, prose)
+        self.assertIn("不符合", outcome.narration)
         self.assertFalse(outcome.snapshot.data["world"]["shop_window"]["broken"])
 
 

@@ -15,9 +15,8 @@ from storyloop_harness.core.decisions import MainDecision
 from storyloop_harness.agents.scene_turn import SingleSceneGenerator
 from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.agents.scene_schema import SceneTurn
-from storyloop_harness.core.actions import adjudicate_action
+from storyloop_harness.runtime.action_resolution import resolve_action
 from storyloop_harness.core.contracts import Effect, Observation, PendingWork, Snapshot, WorldEvent
-from storyloop_harness.core.open_actions import validate_open_effects
 from storyloop_harness.core.perception import physical_observations
 from storyloop_harness.core.turn_result import TurnOutcome
 from storyloop_harness.runtime.player_knowledge import accepted_encounters, merge_knowledge
@@ -180,10 +179,11 @@ class SingleCallGameSession:
                 await emit(progress, "segment", segment=segment.to_dict())
             return TurnOutcome(plan.decision, narration, observations,
                                processed.processed_work_ids, processed.snapshot,
-                               False, segments)
+                               False, segments, remaining_work_ids=processed.remaining_work_ids)
 
     def _validate_plan(self, before: Snapshot, plan: SceneTurn,
                        focus: tuple[str, ...], nearby: tuple[str, ...]) -> SceneTurn:
+        plan = resolve_action(before, self.package, plan)
         # Reject impossible numeric proposals before persisting their prose.
         status_effects(self.package.status_fields, before,
                        [change.model_dump() for change in plan.status_changes])
@@ -224,21 +224,6 @@ class SingleCallGameSession:
             milestones = [item for item in dict.fromkeys(plan.milestones_fulfilled)
                           if item in active]
         prose = plan.prose.strip()
-        if decision.intent == "action":
-            outcome = plan.action
-            effects = tuple(Effect(tuple(item.path), item.value) for item in outcome.effects)
-            try:
-                validate_open_effects(effects, self.package.mutable_fields, before.data)
-                if outcome.status != "occurred" and effects:
-                    raise ValueError("unsuccessful action cannot have state effects")
-            except ValueError:
-                plan = plan.model_copy(update={"action": outcome.model_copy(update={
-                    "status": "attempted", "effects": [],
-                    "player_result": "你尝试了这件事，但结果尚未得到确认。",
-                    "sensory": "玩家尝试采取行动，结果尚不明确。",
-                })})
-                if not plan.story_first:
-                    prose = plan.action.player_result
         if not prose:
             prose = "你停下来，留意眼前的变化。"
         encounters = (accepted_encounters(
@@ -289,22 +274,18 @@ class SingleCallGameSession:
         effects: tuple[Effect, ...] = ()
         prose = plan.prose
         if decision.intent == "action":
-            rule = self.package.action_rules.get(decision.action_id or "")
-            if rule is not None:
-                resolved, direct = adjudicate_action(before, rule, event_id,
-                                                     player_text, duration_ticks,
-                                                     decision.duration)
-                effects = resolved.effects
-                details.update(resolved.details)
-                if not plan.story_first:
-                    prose = "\n\n".join(item.content for item in direct) or prose
-            else:
-                effects = tuple(Effect(tuple(item.path), item.value)
-                                for item in plan.action.effects)
-                details.update({"action_id": None, "outcome": plan.action.status,
-                                "location": location,
-                                "sensory": plan.action.sensory or
-                                ("" if plan.story_first else prose)})
+            accepted = plan.action.status == "occurred"
+            if accepted and decision.action_id is not None:
+                # resolve_action already validated this rule against the current snapshot.
+                effects = self.package.action_rules[decision.action_id].effects
+            elif accepted:
+                effects = tuple(Effect(tuple(item.path), item.value) for item in plan.action.effects)
+            details.update({"action_id": decision.action_id,
+                            "outcome": "accepted" if accepted else "rejected",
+                            "location": location, "sensory": plan.action.sensory,
+                            "player_result": plan.action.player_result})
+            if not accepted:
+                details["reason"] = plan.action.player_result
         elif decision.intent == "inspect":
             entry = (self.package.worldbook.get(decision.entry_id, "player")
                      if decision.entry_id else None)
@@ -325,9 +306,12 @@ class SingleCallGameSession:
             if updated_knowledge != knowledge:
                 effects += (Effect(("player_knowledge",), updated_knowledge),)
                 details["player_encounters"] = [item.model_dump() for item in plan.encounters]
+        effects += status_effects(self.package.status_fields, before,
+                                  [change.model_dump() for change in plan.status_changes])
         event = WorldEvent(event_id, {"speech": "player_input",
                                       "inspect": "player_query",
-                                      "action": "player_action"}[decision.intent],
+                                      "action": "player_action" if plan.action.status == "occurred"
+                                      else "action_rejected"}[decision.intent],
                            "player", None, tick, effects, details)
         observations: list[Observation] = [
             Observation(f"{event_id}:scene", event_id, "player", "scene", prose, tick),
@@ -365,14 +349,6 @@ class SingleCallGameSession:
         ) for reply in plan.replies)
         return self.store.commit(before.game_id, before.version, event,
                                  tuple(observations), pending)
-
-    def proposed_status(self, game_id: str, turn_id: str) -> list[dict[str, object]]:
-        details = next((self.store.event_details(game_id, f"{turn_id}:{kind}")
-                        for kind in ("input", "query", "action")
-                        if self.store.event_exists(game_id, f"{turn_id}:{kind}")), None)
-        raw = details.get("single_call", {}) if isinstance(details, dict) else {}
-        changes = raw.get("status_changes", []) if isinstance(raw, dict) else []
-        return [item for item in changes if isinstance(item, dict)]
 
     def proposed_options(self, game_id: str, turn_id: str,
                          authored: tuple[ActionOption, ...] = ()) -> tuple[ActionOption, ...]:

@@ -1,6 +1,6 @@
 """Structured ordinary scene output and persistence schemas."""
 from typing import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator
 from storyloop_harness.core.decisions import MainDecision
 from storyloop_harness.runtime.player_knowledge import PlayerEncounter
 
@@ -11,7 +11,7 @@ class SceneReply(BaseModel):
 
 class ProposedEffect(BaseModel):
     path: list[str]
-    value: str | int | bool
+    value: StrictStr | StrictInt | StrictBool
 
 
 class ProposedStatusChange(BaseModel):
@@ -59,6 +59,9 @@ class NarrativeTurn(BaseModel):
     status_changes: list[ProposedStatusChange] = Field(default_factory=list)
     participants: list[str] = Field(default_factory=list)
     interaction: Literal["speech", "inspect", "action"] = "speech"
+    action_id: str | None = None
+    entry_id: str | None = None
+    action: ProposedAction | None = None
     duration: Literal["brief", "standard", "extended", "rest"] = "brief"
     delivery: Literal["targets", "room", "private_message"] = "targets"
     witnessed: str = ""
@@ -107,6 +110,7 @@ class NarrativeTurn(BaseModel):
         return SceneTurn(
             decision=MainDecision(
                 intent=self.interaction, duration=self.duration,
+                action_id=self.action_id, entry_id=self.entry_id,
                 target_ids=participants,
                 channel="private_message" if self.delivery == "private_message" else "speech",
                 audience="room" if self.delivery == "room" else "targets",
@@ -114,7 +118,7 @@ class NarrativeTurn(BaseModel):
             prose=self.prose, replies=self.replies,
             options=self.options, memories=self.memories,
             status_changes=self.status_changes,
-            action=ProposedAction(sensory=self.witnessed),
+            action=self.action or ProposedAction(sensory=self.witnessed),
             story_first=True,
         )
 
