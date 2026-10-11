@@ -10,6 +10,14 @@ class ModelResponse(Protocol):
 
 
 class ModelPort(Protocol):
+    """Structured generation boundary.
+
+    Ordinary bounded scene calls pass ``context_budget`` (ContextBudget) and
+    ``max_completion_tokens`` equal to its output_tokens. Implementations must
+    enforce the estimated context window before network activity, honor this
+    single output cap, and never forward context_budget to the provider.
+    Other generators may omit both keywords.
+    """
     async def __call__(self, messages: list, *, structured_model: type, **kwargs: object) -> ModelResponse: ...
 
 

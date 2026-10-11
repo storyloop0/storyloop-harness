@@ -9,7 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SceneTurn, SingleSceneGenerator
+from storyloop_harness.agents.scene_turn import SceneContextProjector, SingleSceneGenerator
+from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.contracts import AgentContextEntry, Observation, WorldEvent
 from storyloop_harness.core.open_actions import parse_mutable_fields, validate_open_effects
 from storyloop_harness.core.contracts import Effect

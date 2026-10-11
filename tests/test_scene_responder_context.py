@@ -8,7 +8,8 @@ from pathlib import Path
 import unittest
 
 from storyloop_harness.testing import InMemoryGameStore
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SceneTurn
+from storyloop_harness.agents.scene_turn import SceneContextProjector
+from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.contracts import Observation, WorldEvent
 from storyloop_harness.advanced import estimate_tokens
 from storyloop_harness.runtime.single_call import SingleCallGameSession

@@ -10,7 +10,8 @@ from storyloop_harness.core.store_port import GameStore
 from storyloop_harness.adapters.telemetry import NoopTelemetry, Telemetry, session_id_for_game
 from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.core.decisions import MainDecision
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SceneTurn, SingleSceneGenerator
+from storyloop_harness.agents.scene_turn import SceneContextProjector, SingleSceneGenerator
+from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.actions import adjudicate_action
 from storyloop_harness.core.contracts import Effect, Observation, PendingWork, Snapshot, WorldEvent
 from storyloop_harness.core.open_actions import validate_open_effects
