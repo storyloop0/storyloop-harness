@@ -131,6 +131,40 @@ def test_wire_estimate_boundary_and_concurrent_budgets():
         assert len(captured) == 2
     asyncio.run(run())
 
+def test_streaming_sdk_option_is_included_at_final_wire_boundary():
+    from dataclasses import replace
+    from storyloop_harness.context.budget import estimate_request_envelope
+
+    async def run():
+        model = create_test_model('offline-test')
+        model.stream = True
+        model._parse_stream_response = lambda start, response: 'parsed offline stream'
+        model.client.chat.completions.create = AsyncMock(return_value=object())
+        messages = model._messages([{'role': 'user', 'content': 'synthetic streaming request'}])
+
+        await model._call_api(model.model, messages, context_budget=ContextBudget(),
+                              max_completion_tokens=4096)
+        wire = model.client.chat.completions.create.await_args.kwargs
+        assert wire['stream_options'] == {'include_usage': True}
+        actual = estimate_request_envelope(
+            wire['messages'], wire.get('tools'), ContextBudget(),
+            envelope_options={key: value for key, value in wire.items()
+                              if key not in ('messages', 'tools')},
+        )
+
+        at_boundary = replace(ContextBudget(), context_window_tokens=actual.total_tokens)
+        await model._call_api(model.model, messages, context_budget=at_boundary,
+                              max_completion_tokens=4096)
+        assert model.client.chat.completions.create.await_count == 2
+
+        below_boundary = replace(at_boundary, context_window_tokens=actual.total_tokens - 1)
+        with pytest.raises(ContextBudgetExceeded):
+            await model._call_api(model.model, messages, context_budget=below_boundary,
+                                  max_completion_tokens=4096)
+        assert model.client.chat.completions.create.await_count == 2
+
+    asyncio.run(run())
+
 @pytest.mark.parametrize('extra_body', [None, {'enable_thinking': False}])
 def test_sdk_allows_ordinary_provider_options(extra_body):
     async def run():

@@ -97,6 +97,11 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             options.pop("extra_body", None)
             extra_body = kwargs.get("extra_body") if "extra_body" in kwargs else self.extra_body
             options.update(extra_body or {})
+            # AgentScope unconditionally installs this after generate_kwargs
+            # when streaming, so the guard must account for its final wire
+            # envelope (including its override order).
+            if self.stream:
+                options["stream_options"] = {"include_usage": True}
             report = estimate_request_envelope(formatted, formatted_tools, budget,
                                                envelope_options=options)
             enforce_window(report)
