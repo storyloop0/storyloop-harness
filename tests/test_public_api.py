@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from storyloop_harness.context import ContextBudget
 
 
 def test_public_offline_turn():
@@ -100,14 +101,14 @@ def test_public_engine_accepts_platform_settings_and_bounded_progress():
     program = SimpleNamespace(current_action_context=lambda snapshot: {'goal': 'find the boat'})
     clock, telemetry = StoryClock(12), NoopTelemetry()
     engine = TurnEngine(store, package, OfflineModel(), clock=clock, program=program,
-                        max_responders=1, context_window_tokens=8192, max_steps=3,
+                        max_responders=1, context_budget=ContextBudget(context_window_tokens=32768), max_steps=3,
                         telemetry=telemetry)
     # Settings affect different collaborators; their identity is part of assembly correctness.
     assert engine.session.clock is clock
     assert engine.session.projector.clock is clock
     assert engine.session.projector.program is program
     assert engine.session.projector.max_responders == 1
-    assert engine.session.projector.context_window_tokens == 8192
+    assert engine.session.projector.context_budget.context_window_tokens == 32768
     assert engine.session.max_steps == 3
     assert engine.session.telemetry is telemetry
     progress = []

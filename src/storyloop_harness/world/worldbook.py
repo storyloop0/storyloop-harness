@@ -102,16 +102,16 @@ class Worldbook:
             and needle in entry.text.casefold()
         ][:limit]
 
-    def visible_lore(self, viewer: str, limit: int = 4) -> tuple[WorldbookEntry, ...]:
+    def visible_lore(self, viewer: str, limit: int | None = 4) -> tuple[WorldbookEntry, ...]:
         """Return setting material safe to use in player-facing scene prose."""
-        if limit < 0:
+        if limit is not None and limit < 0:
             raise ValueError("limit cannot be negative")
         return tuple(entry for entry in self._entries.values()
                      if entry.kind == "lore" and self._can_read(entry, viewer, frozenset()))[:limit]
 
-    def visible_rules(self, viewer: str, limit: int = 4) -> tuple[WorldbookEntry, ...]:
+    def visible_rules(self, viewer: str, limit: int | None = 4) -> tuple[WorldbookEntry, ...]:
         """Return script-declared public constraints separately from setting prose."""
-        if limit < 0:
+        if limit is not None and limit < 0:
             raise ValueError("limit cannot be negative")
         return tuple(entry for entry in self._entries.values()
                      if entry.kind == "rule" and self._can_read(entry, viewer, frozenset()))[:limit]

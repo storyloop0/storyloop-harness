@@ -7,4 +7,5 @@ dist/
 /docs/
 *.md
 !/README.md
+!/README.en.md
 /PROJECT_MEMORY.md

@@ -7,10 +7,14 @@ import re
 from weakref import WeakValueDictionary
 
 from storyloop_harness.core.store_port import GameStore
+from storyloop_harness.context import ContextBudgetExceeded
+from storyloop_harness.context.metrics import record_projection_metrics
 from storyloop_harness.adapters.telemetry import NoopTelemetry, Telemetry, session_id_for_game
 from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.core.decisions import MainDecision
-from storyloop_harness.agents.scene_turn import SceneContextProjector, SceneTurn, SingleSceneGenerator
+from storyloop_harness.agents.scene_turn import SingleSceneGenerator
+from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.core.actions import adjudicate_action
 from storyloop_harness.core.contracts import Effect, Observation, PendingWork, Snapshot, WorldEvent
 from storyloop_harness.core.open_actions import validate_open_effects
@@ -142,7 +146,15 @@ class SingleCallGameSession:
                 plan = SceneTurn.model_validate(saved["single_call"])
             else:
                 await emit(progress, "stage", stage="thinking")
-                context = self.projector.project(before, player_text)
+                try:
+                    context = self.projector.project(before, player_text)
+                except ContextBudgetExceeded as error:
+                    with self.telemetry.span('single-scene-projection',
+                            {'game_id': game_id, 'turn_id': turn_id},
+                            session_id=session_id_for_game(game_id, self.package.package_id)) as span:
+                        record_projection_metrics(span, error.report)
+                        span.metric('story.context.rejected', 1.0)
+                    raise
                 with self.telemetry.span(
                     "single-call-turn", {"game_id": game_id, "turn_id": turn_id,
                                           "focus_actor_ids": list(context.focus_actor_ids)},

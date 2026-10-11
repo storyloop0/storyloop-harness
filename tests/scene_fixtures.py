@@ -2,7 +2,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from storyloop_harness.agents.scene_turn import SceneTurn
+from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.world.scenario import ScenarioPackage
 from storyloop_harness.world.story_blueprint import StoryBlueprint
 from storyloop_harness.world.worldbook import Worldbook, WorldbookEntry
