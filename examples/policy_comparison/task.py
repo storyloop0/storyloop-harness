@@ -1,5 +1,6 @@
 """One isolated SQLite save and real TurnEngine run per policy/case pair."""
 from copy import deepcopy
+from dataclasses import asdict
 from hashlib import sha256
 from importlib.metadata import version
 import json
@@ -65,8 +66,11 @@ def _hash(content):
 
 
 def _revision():
-    result = subprocess.run(['git', '-c', f'safe.directory={REPO.as_posix()}', 'rev-parse', 'HEAD'],
-                            cwd=REPO, capture_output=True, text=True, timeout=5)
+    try:
+        result = subprocess.run(['git', '-c', f'safe.directory={REPO.as_posix()}', 'rev-parse', 'HEAD'],
+                                cwd=REPO, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     return result.stdout.strip() if result.returncode == 0 else None
 
 
@@ -102,13 +106,19 @@ async def task(*, case, policy: ContextPolicy):
             player_fields = {key: value for key, value in request.items() if key != 'npc_contexts'}
             scope = ('FOREIGN_GAME' not in encoded and 'UNSELECTED_PRIVATE' not in encoded
                      and 'SELECTED_PRIVATE' not in json.dumps(player_fields)
+                     and 'SELECTED_PRIVATE' in json.dumps(request['npc_contexts'])
                      and len(request['npc_contexts']) == 1
                      and request['npc_contexts'][0]['id'] == 'dockhand')
             action_outcome = next((event.details['outcome'] for event in outcome.events
                                    if 'outcome' in event.details), None)
             result = {'window_broken': outcome.snapshot.data['world']['shop_window']['broken'],
                       'action_outcome': action_outcome,
-                      'state_version_delta': outcome.snapshot.version - before.version}
+                      'state_version_delta': outcome.snapshot.version - before.version,
+                      'state_sha256': _hash(json.dumps(outcome.snapshot.data, sort_keys=True,
+                                                      ensure_ascii=False, separators=(',', ':'))),
+                      'events_sha256': _hash(json.dumps([asdict(event) for event in outcome.events],
+                                                       sort_keys=True, ensure_ascii=False,
+                                                       separators=(',', ':')))}
             checks = {
                 'scope': scope,
                 'dispatch_match': request == projection.request,

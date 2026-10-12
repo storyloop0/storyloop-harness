@@ -151,6 +151,8 @@ print(projection.report.to_dict())
 
 检查范围包括各接收者检查点之后的历史、最近四次玩家输入、最近六条玩家观察、可见世界书条目、公开/系统来源事实和里程碑候选，以及选中回复角色的私有卡片与历史。未选中角色的私有上下文和其他存档不在范围内。引擎使用自身的时钟、故事程序、回复角色上限和显式玩家偏好作用域。
 
+`TurnEngine(..., context_policy=ContextPolicy.RELEVANT)` 可从 `storyloop_harness.context` 选择固定策略；省略参数仍使用 `ContextPolicy.DEFAULT`（`scene-projection-v1`）。`RECENT` 只取近期原始经历，`RELEVANT` 给较早的相关经历更多名额，两者读取该接收者全部已提交历史且不使用 checkpoint。`SUMMARY` 将 checkpoint 摘要与较短的近期/相关原始经历组合；缺少 checkpoint 时直接使用原始经历。四种策略共用相同范围保护、预算裁剪与世界裁决，报告的 `policy_id` 标明实际策略。`testing.project_scene_request` 也接受 `context_policy`。
+
 ### 角色经历 checkpoint
 
 给 `TurnEngine` 传入异步 `checkpoint_summarizer` 后，新提交的成功回合会对玩家及剧本角色分别检查历史。函数接收从 `storyloop_harness.context` 导入的 `CheckpointRequest`（存档、角色、剧本身份、旧摘要、本次来源条目），返回不超过 1200 字符的新摘要；应保留重要的旧摘要信息和来源线索。默认至少积累 16 条经历才触发，并保留最近至少 8 条原始记录及其完整版本组。未配置摘要函数时不发起额外模型调用。
@@ -169,12 +171,14 @@ SQLite 保存角色与剧本身份、覆盖版本和本次来源 ID；原始事�
 
 ```sh
 python -m examples.evaluation --output result.json
+python -m examples.policy_comparison --output policy-comparison.json
 # 可选的原生 Langfuse 执行器（SDK 4.17.0）：
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
 ```
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
+- 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；真实服务商 Token 与成本为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
 - `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
 - `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。
 
@@ -184,7 +188,7 @@ python -m examples.evaluation --langfuse --output result.json
 | --- | --- |
 | 顶层包 | `ScenarioPackage`、`TurnEngine`、`TurnInput`、`TurnOutcome`、`GameStore`、`ModelPort`、`CampaignContext` |
 | `contracts`、`ports` | 回合数据及模型/存储/故事程序协议 |
-| `context` | `ContextBudget`、`ContextProjection`、`ProjectionReport`、`MaterialDecision`、`ContextBudgetExceeded` |
+| `context` | `ContextPolicy`、`ContextBudget`、`ContextProjection`、`ProjectionReport`、`MaterialDecision`、`ContextBudgetExceeded` |
 | `advanced` | 事件、工作与故事时钟契约 |
 | `generation` | 结构化模型传输、格式化与动作建议 |
 | `telemetry`、`usage` | 追踪与作用域内 Token 用量，不含价格策略 |
@@ -198,7 +202,7 @@ python -m examples.evaluation --langfuse --output result.json
 - 带有旧 `npc_reply` 待办的存档会在生成和世界写入前被拒绝，需要重建。
 - SQLite 适配器提供单次提交的事务和版本冲突检查；跨进程任务领取与冲突重试由应用负责。
 - 已存回合重放与预期版本提交，不代表端到端计费恢复或分布式执行保证。
-- 长局记忆、可复现的质量/成本对照与更强的执行恢复仍是后续方向。
+- 真实模型质量/成本对照、进一步的长局记忆验证与更强的执行恢复仍是后续方向。
 
 ```sh
 python -m pip install -e '.[test,evaluation]' build

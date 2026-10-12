@@ -57,6 +57,13 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     assert report['passed'] is False
     assert len(report['rows']) == 12
     assert all(row['error']['type'] == 'RuntimeError' for row in report['rows'])
+    async def malformed_task(*, case, policy):
+        return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
+                'checks': {'scope': False}}
+    malformed = run_local(task_fn=malformed_task)
+    assert malformed['passed'] is False
+    assert len(malformed['rows']) == 12
+    assert all(row['error']['type'] == 'ValueError' for row in malformed['rows'])
     monkeypatch.setattr(__main__, 'run_local', lambda: {'passed': False, 'rows': report['rows'][:1]})
     assert __main__.main([]) == 1
     assert json.loads(capsys.readouterr().out)['passed'] is False
@@ -68,3 +75,16 @@ def test_cli_writes_same_json_and_returns_zero(tmp_path, monkeypatch, capsys):
     target = tmp_path / 'comparison.json'
     assert __main__.main(['--output', str(target)]) == 0
     assert json.loads(target.read_text(encoding='utf-8')) == json.loads(capsys.readouterr().out)
+
+
+def test_git_revision_is_optional(monkeypatch):
+    import subprocess
+    from examples.policy_comparison import task
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError('git')
+    monkeypatch.setattr(task.subprocess, 'run', unavailable)
+    assert task._revision() is None
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired('git', 5)
+    monkeypatch.setattr(task.subprocess, 'run', timeout)
+    assert task._revision() is None

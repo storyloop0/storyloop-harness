@@ -77,6 +77,20 @@ def test_invalid_policy_and_budget_failure_are_labeled():
     assert error.value.report.policy_id == ContextPolicy.RELEVANT.value
 
 
+def test_summary_policy_falls_back_to_raw_history_without_checkpoint():
+    package = source_package()
+    store = InMemoryGameStore()
+    package.seed_game(store, 'game')
+    event = WorldEvent('source-event', 'synthetic', None, None, 0, ())
+    store.commit('game', store.load('game').version, event,
+                 (Observation('player-source', event.event_id, 'player', 'scene',
+                              'brasskey731 uncovered clue', 0),), ())
+    result = SceneContextProjector(store, package, context_policy=ContextPolicy.SUMMARY).project(
+        store.load('game'), 'brasskey731')
+    assert selected(result, 'player-source')
+    assert result.request['player_summary'] == ''
+
+
 def test_engine_and_diagnostic_helper_dispatch_identical_nondefault_request():
     async def run():
         from scene_fixtures import a_turn
