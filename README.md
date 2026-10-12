@@ -2,80 +2,74 @@
 
 **中文** | [English](README.en.md)
 
-用于互动叙事的 Python 运行时，维护持续变化的世界事实与角色各自的信息视角。开发者可以把玩家的自由输入转成场景叙述、经过校验的事件和新的状态快照。
+把玩家的自由输入变成场景叙述和可持续更新的世界状态。StoryLoop Harness 是独立的 Python 互动叙事运行时，适合开发叙事应用、命令行故事或生成实验的开发者。
 
-例如，玩家来到港口，可以向码头工提问，也可以尝试打破店铺橱窗。运行时先组装相关上下文，让模型给出结构化提案，再按剧本规则检查并提交获准的状态变化。下一回合读取更新后的世界；模型写出一段叙述，并不意味着提议的变化已经成为事实。仓库包含这个[港口示例](examples/freeform)。
+- **选择上下文**：按玩家与角色视角组装相关故事素材。
+- **校验世界变化**：生成提案经过剧本规则检查，再提交获准事件。
+- **检查生成依据**：预览请求与来源、选择、裁剪和预算报告。
 
-**状态：** 持续孵化中 · Python 3.12+ · MIT。API、配置和存档格式可能直接调整，不提供向后兼容或迁移保证。
+[快速开始](#快速开始) · [港口剧本](examples/freeform) · [反馈问题](https://github.com/storyloop0/storyloop-harness/issues) · [玩家与创作者界面：StoryLoop Platform](https://github.com/storyloop0/storyloop-platform)
 
-## 它适合放在哪里
+## 先看一个回合
 
-通过注入模型和存储，Harness 可以独立用于你自己的叙事应用、命令行工具或实验。[StoryLoop Platform](https://github.com/storyloop0/storyloop-platform) 是配套的玩家与创作者应用，负责前端、账号、模型路由、计费、SQL 存储和部署。
+下面是 `examples/offline_turn.py` 对输入 `Hello` 的实际终端输出。它使用确定性模型，无需密钥、不请求模型服务，也不产生模型服务费用；用于检查运行流程，不代表真实模型的叙事质量。
 
-```mermaid
-flowchart LR
-    App[你的应用或 StoryLoop Platform] --> Engine[Harness TurnEngine]
-    Package[ScenarioPackage：规则与故事素材] --> Engine
-    Engine --> Model[ModelPort：生成适配器]
-    Engine --> Store[GameStore：持久化实现]
-    Engine --> Result[TurnOutcome：故事、快照、事件、用量]
-    Result --> App
+```text
+The dockhand coils a rope and waves you toward the arriving boat.
+
+【码头工】
+The morning boat has arrived.
+Snapshot version: 2
 ```
 
-Harness 负责上下文投影、结构化生成、剧本校验和事件执行；调用方负责凭据、存储选型、请求归属与价格策略。内置的内存存储和确定性模型，让你无需模型密钥就能体验这些边界。
+## 快速开始
 
-## 一个回合如何执行
+需要 **Python 3.12+** 和 Git。按你的系统运行以下命令；macOS / Linux 的 `python3` 需为 3.12 或更高版本。成功时终端显示上面的故事和 `Snapshot version: 2`。
 
-```mermaid
-flowchart TD
-    Input[玩家输入与已有快照] --> Project[投影上下文并检查预算]
-    Project --> Generate[生成结构化场景提案]
-    Project -->|必要材料无法放入窗口| Fail[在模型调用和世界写入前失败]
-    Generate --> Validate[校验并修正提案]
-    Generate -->|生成异常| Stop[在提案提交前返回错误]
-    Validate -->|动作被拒绝| Rejected[替换为确定性拒绝结果]
-    Rejected --> Commit
-    Validate --> Commit[按预期版本提交裁决后的事件]
-    Commit -->|存储冲突或异常| StoreError[向调用方传递存储错误]
-    Commit --> Work[处理就绪工作：角色发言与场景提示]
-    Work --> Output[可见故事与更新后的快照]
+**Windows PowerShell**
+
+```powershell
+git clone https://github.com/storyloop0/storyloop-harness.git
+cd storyloop-harness
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\python.exe examples/offline_turn.py
 ```
 
-普通 `single_call` 回合采用一次结构化场景生成阶段，再执行确定性工作。传输重试和其他定时生成任务可能产生额外模型请求。角色回复一起生成，通过 `single_npc_reply` 工作交付；每个角色没有独立的 ReAct 循环。
-
-预设动作按剧本规则裁决，成功正文使用作者声明的结果；拒绝时替换正文并丢弃推测的后果。开放动作只能修改声明的可变字段。合格的数值状态变化与玩家事件一起提交，重复回合不会再应用一次；积分账务由应用负责。自由生成的文字仍不保证句句符合事实。存储异常或后续工作失败需要调用方处理；整个回合不保证原子事务，首次提交前失败可能重新调用模型。
-
-## 可以检查的上下文
-
-```mermaid
-flowchart LR
-    Sources[状态、可见世界书、来源事实与里程碑] --> Projector[上下文投影器]
-    Views[玩家历史与选中角色的卡片和经历] --> Projector
-    Budget[材料上限与完整请求窗口] --> Projector
-    Projector --> Request[供生成使用的独立场景请求]
-    Projector --> Report[开发者报告：来源、选择与估算]
-```
-
-`TurnEngine.project_context` 同步预览普通场景请求，不调用模型、不写入存储。角色视角有各自的历史与选择规则，但共享模型会看到多个角色的上下文，因此不能保证角色秘密的硬隔离。
-
-独立请求包含故事素材；不可变报告包含来源 ID、归属、状态/检查点版本、字段、选择/裁剪原因与大小估算，不包含来源正文。两者都应留在开发者侧。报告不会进入玩家回合输出或故事事件；默认遥测只记录汇总数量与估算值。
-
-## 快速开始：无需模型密钥
-
-克隆仓库并安装到虚拟环境：
+**macOS / Linux**
 
 ```sh
 git clone https://github.com/storyloop0/storyloop-harness.git
 cd storyloop-harness
-python -m venv .venv
-# macOS / Linux:
-. .venv/bin/activate
-# Windows PowerShell: .\.venv\Scripts\Activate.ps1
-python -m pip install .
-python examples/offline_turn.py
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/python examples/offline_turn.py
 ```
 
-请使用 Python 3.12+。示例采用仓库内的合成剧本、内存存储和确定性模型，不请求模型服务，输出故事与最终快照版本。
+下一步：修改[港口剧本](examples/freeform)的故事素材，或展开下方参考接入自己的模型与存储。需要浏览器中的玩家与创作者界面，请使用 [StoryLoop Platform](https://github.com/storyloop0/storyloop-platform)。
+
+## 运行时如何工作
+
+```mermaid
+flowchart LR
+    Input[玩家输入与快照] --> Context[选择上下文]
+    Context --> Model[生成结构化提案]
+    Model --> Rules[剧本规则校验]
+    Rules --> Result[提交获准事件与新快照]
+```
+
+生成的叙述不自动成为世界事实。Harness 负责上下文、生成、校验和事件执行；你的应用提供模型凭据、存储选型和价格策略。`TurnEngine.project_context` 可在不调用模型、不写入存储的情况下检查请求。
+
+**状态：** 持续孵化中 · MIT。API、配置和存档格式可能直接调整，不保证兼容或迁移。角色视角不是秘密的硬隔离；SQLite 提供单次提交的持久化，跨进程协调仍由应用负责，整个回合不保证原子事务。
+
+## 反馈与参与
+
+遇到问题或有使用建议，请到 [Issues](https://github.com/storyloop0/storyloop-harness/issues) 提供版本或提交号、操作系统、最小复现与去除密钥的错误信息。想贡献代码，可从港口示例或现有 Issue 入手，在 PR 中说明行为变化和验证结果。开发命令见下方参考。
+
+<details>
+<summary>开发者参考：接入、上下文预算与执行边界</summary>
+
+下方命令中的 `python`，Windows 请替换为 `.\.venv\Scripts\python.exe`，macOS / Linux 请替换为 `.venv/bin/python`，确保使用上面安装好的虚拟环境；命令均在仓库根目录运行。
 
 ### 保存并继续一个故事
 
@@ -153,8 +147,7 @@ print(projection.report.to_dict())
 
 公开规则、来源解析、玩家输入、权威状态以及选中角色的非空身份信息属于必要内容。如果无法放入预算，`ContextBudgetExceeded` 携带不含来源正文的报告，在模型调用和世界写入前失败。修改后的检查请求会在生成时重新估算。该策略覆盖普通场景请求及每次传输尝试，不计量整局支出。
 
-<details>
-<summary>上下文选择规则参考</summary>
+### 上下文选择规则参考
 
 检查范围包括各接收者检查点之后的历史、最近四次玩家输入、最近六条玩家观察、可见世界书条目、公开/系统来源事实和里程碑候选，以及选中回复角色的私有卡片与历史。未选中角色的私有上下文和其他存档不在范围内。引擎使用自身的时钟、故事程序、回复角色上限和显式玩家偏好作用域。
 
@@ -162,7 +155,7 @@ print(projection.report.to_dict())
 
 `testing.project_scene_request(store, package, game_id, player_text, context_budget=ContextBudget())` 使用同一投影器，仅返回独立请求；还接受 `clock`、`program` 和 `max_responders`。
 
-</details>
+
 
 ## 小规模叙事实验
 
@@ -208,6 +201,45 @@ python -m build --wheel
 ```
 
 CI 还会在仓库外安装构建出的 wheel 并运行离线示例。确定性测试不能证明真实模型的叙事质量。
+
+## 一个回合如何执行
+
+```mermaid
+flowchart TD
+    Input[玩家输入与已有快照] --> Project[投影上下文并检查预算]
+    Project --> Generate[生成结构化场景提案]
+    Project -->|必要材料无法放入窗口| Fail[在模型调用和世界写入前失败]
+    Generate --> Validate[校验并修正提案]
+    Generate -->|生成异常| Stop[在提案提交前返回错误]
+    Validate -->|动作被拒绝| Rejected[替换为确定性拒绝结果]
+    Rejected --> Commit
+    Validate --> Commit[按预期版本提交裁决后的事件]
+    Commit -->|存储冲突或异常| StoreError[向调用方传递存储错误]
+    Commit --> Work[处理就绪工作：角色发言与场景提示]
+    Work --> Output[可见故事与更新后的快照]
+```
+
+普通 `single_call` 回合采用一次结构化场景生成阶段，再执行确定性工作。传输重试和其他定时生成任务可能产生额外模型请求。角色回复一起生成，通过 `single_npc_reply` 工作交付；每个角色没有独立的 ReAct 循环。
+
+预设动作按剧本规则裁决，成功正文使用作者声明的结果；拒绝时替换正文并丢弃推测的后果。开放动作只能修改声明的可变字段。合格的数值状态变化与玩家事件一起提交，重复回合不会再应用一次；积分账务由应用负责。自由生成的文字仍不保证句句符合事实。存储异常或后续工作失败需要调用方处理；整个回合不保证原子事务，首次提交前失败可能重新调用模型。
+
+## 可以检查的上下文
+
+```mermaid
+flowchart LR
+    Sources[状态、可见世界书、来源事实与里程碑] --> Projector[上下文投影器]
+    Views[玩家历史与选中角色的卡片和经历] --> Projector
+    Budget[材料上限与完整请求窗口] --> Projector
+    Projector --> Request[供生成使用的独立场景请求]
+    Projector --> Report[开发者报告：来源、选择与估算]
+```
+
+`TurnEngine.project_context` 同步预览普通场景请求，不调用模型、不写入存储。角色视角有各自的历史与选择规则，但共享模型会看到多个角色的上下文，因此不能保证角色秘密的硬隔离。
+
+独立请求包含故事素材；不可变报告包含来源 ID、归属、状态/检查点版本、字段、选择/裁剪原因与大小估算，不包含来源正文。两者都应留在开发者侧。报告不会进入玩家回合输出或故事事件；默认遥测只记录汇总数量与估算值。
+
+
+</details>
 
 ## 许可证
 
