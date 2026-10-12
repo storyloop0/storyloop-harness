@@ -123,7 +123,9 @@ def project_status_fields(fields: tuple[StatusField, ...],
 
 def status_effects(fields: tuple[StatusField, ...], snapshot: Snapshot,
                    changes: list[dict[str, object]]) -> tuple[Effect, ...]:
-    allowed = {field.field_id: field for field in fields if field.automatically_updated}
+    visible = {row['id'] for row in project_status_fields(fields, snapshot.data)}
+    allowed = {field.field_id: field for field in fields
+               if field.automatically_updated and field.field_id in visible}
     seen: set[str] = set()
     effects: list[Effect] = []
     for change in changes:

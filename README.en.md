@@ -58,9 +58,9 @@ flowchart LR
     Rules --> Result[Commit accepted events and new snapshot]
 ```
 
-Generated prose does not automatically become a world fact. Harness handles context, generation, validation and event execution; your application supplies model credentials, durable storage and pricing. `TurnEngine.project_context` lets you inspect requests without model calls or writes.
+Generated prose does not automatically become a world fact. Harness handles context, generation, validation and event execution; your application supplies model credentials, storage selection and pricing. `TurnEngine.project_context` lets you inspect requests without model calls or writes.
 
-**Status:** active incubation · MIT. APIs, configuration and saved formats may change without compatibility or migration support. Character views do not guarantee secret isolation; durable persistence and cross-process coordination need caller implementations, and a turn is not guaranteed to be atomic.
+**Status:** active incubation · MIT. APIs, configuration and saved formats may change without compatibility or migration support. Character views do not guarantee secret isolation; SQLite provides per-commit persistence, while applications own cross-process coordination, and a turn is not guaranteed to be atomic.
 
 ## Feedback and contributions
 
@@ -68,6 +68,27 @@ For problems or usage suggestions, open an [Issue](https://github.com/storyloop0
 
 <details>
 <summary>Developer reference: integration, context budgets and execution boundaries</summary>
+
+In every command below, replace `python` with `.\.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS / Linux so you use the environment installed above. Run from the repository root.
+
+### Save and continue a story
+
+After installation, run these three commands. The second replays the same turn; the third attempts the action again.
+
+```sh
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-1 --text "break the window"
+python examples/persistent_story.py --db .venv/storyloop-demo.sqlite3 --turn-id break-2 --text "break the window"
+```
+
+The first prints `window_broken: true`; the second keeps the same version with `model_calls: 0`; the third is rejected by the action rule. SQLite preserves world state, history, and pending work. The offline fixture recognizes only this fixed action and `hello`; it demonstrates execution and recovery.
+
+<details>
+<summary>Use a live model</summary>
+
+Set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, and `STORY_MODEL_BASE_URL`, then add `--live` to the command with a new turn ID and your own input. This needs an OpenAI-compatible endpoint supporting structured output and incurs provider charges. The example demonstrates credential/model wiring; endpoint compatibility still needs checking.
+
+</details>
 
 ### Use the turn API
 
@@ -100,7 +121,7 @@ if __name__ == "__main__":
 
 To connect a live model, supply a `ModelPort` implementation; the
 `generation.CompatibleOpenAIChatModel` adapter uses AgentScope 2.0.9. The caller
-supplies credentials and routing. To persist games, implement `GameStore` and
+supplies credentials and routing. To persist games, use `storage.SQLiteGameStore` or implement `GameStore` and
 its expected-version commit contract.
 
 ## Inspect and configure the budget
@@ -139,6 +160,21 @@ The inspected scope includes history after each recipient's checkpoint, the last
 
 
 
+## Small narrative experiments
+
+From the repository root, after installing the harness:
+
+```sh
+python -m examples.evaluation --output result.json
+# Optional native Langfuse runner (SDK 4.17.0):
+python -m pip install -e '.[evaluation]'
+python -m examples.evaluation --langfuse --output result.json
+```
+
+- Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
+- `--langfuse` writes traces/scores via the [native experiment runner](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk); set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and optionally `LANGFUSE_BASE_URL`. Server ingestion is reported as unverified.
+- `--live` calls a real provider and incurs charges; set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, `STORY_MODEL_BASE_URL`. Fixtures establish runtime contracts, not narrative quality or character secrecy in shared model context. Edit the task's default `ContextBudget` for small budget comparisons.
+
 ## Integration reference
 
 | Surface | Purpose |
@@ -149,19 +185,20 @@ The inspected scope includes history after each recipient's checkpoint, the last
 | `advanced` | Event, work and story-clock contracts |
 | `generation` | Structured model transport, formatting and action suggestions |
 | `telemetry`, `usage` | Tracing and scoped token usage, without pricing policy |
+| `storage` | Standard-library SQLite persistence with reopen and expected-version commits |
 | `testing` | In-memory store, offline model and detached request inspection |
 
-`run_turn` takes a `TurnInput`, optional progress and campaign time bounds. `run_ready_work` drains supported queued work. `TurnOutcome` includes visible output, a snapshot, events committed by that invocation and model usage. Internal module paths are not extension APIs.
+`run_turn` takes a `TurnInput`, optional progress and campaign time bounds. `run_ready_work` drains supported queued work. `TurnOutcome` includes visible output, a snapshot, events committed by that invocation, model usage, and `remaining_work_ids` for ready work left at the step limit. Internal module paths are not extension APIs.
 
 ## Current limits and development
 
 - Legacy saves with pending `npc_reply` work are rejected before generation or world writes; recreate them.
-- Durable persistence and cross-process coordination require a caller-supplied store and application implementation.
+- The SQLite adapter provides per-commit transactions and version conflict checks; applications own cross-process task claims and conflict retries.
 - Saved-turn replay and expected-version commits do not establish end-to-end billing recovery or distributed execution guarantees.
 - Long-session memory, reproducible quality/cost comparisons and stronger execution recovery remain development directions.
 
 ```sh
-python -m pip install -e '.[test]' build
+python -m pip install -e '.[test,evaluation]' build
 python -m pytest tests -q
 python -m build --wheel
 ```
@@ -177,8 +214,9 @@ flowchart TD
     Project -->|Required material cannot fit| Fail[Fail before model dispatch or world writes]
     Generate --> Validate[Validate and sanitize proposals]
     Generate -->|Generation error| Stop[Return error before proposal commit]
-    Validate -->|Rejected proposal| Stop
-    Validate --> Commit[Commit accepted events with expected version]
+    Validate -->|Rejected action| Rejected[Replace with deterministic rejection result]
+    Rejected --> Commit
+    Validate --> Commit[Commit adjudicated events with expected version]
     Commit -->|Store conflict or error| StoreError[Propagate store error]
     Commit --> Work[Drain ready work: speech and scenario cues]
     Work --> Output[Visible story and resulting snapshot]
@@ -186,7 +224,7 @@ flowchart TD
 
 An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Character replies are generated together and delivered through `single_npc_reply` work; each character does not run a ReAct loop.
 
-Validation can filter targets, replies and milestones, or replace invalid open-action effects with an unconfirmed attempt. Authored action rules adjudicate their own effects. Status changes remain proposals exposed through `proposed_status` for application settlement. A store error or later work failure needs caller handling: the entire turn is not promised to be one atomic transaction.
+Authored actions are adjudicated against scenario rules and use the authored result as canonical scene prose. Rejections replace prose and discard speculative consequences. Open actions can only change declared mutable fields. Eligible numeric status changes commit with the player event and are not reapplied on replay; the application owns account billing. Free-form generated text is not guaranteed factually consistent. Store errors and later work failures need caller handling: the whole turn is not atomic, and failure before its first commit can require another model call.
 
 ## Context you can inspect
 

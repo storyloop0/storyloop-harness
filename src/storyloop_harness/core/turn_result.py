@@ -43,3 +43,4 @@ class TurnOutcome:
 
     events: tuple[WorldEvent, ...] = ()
     model_usage: tuple[ModelUsage, ...] = ()
+    remaining_work_ids: tuple[str, ...] = ()
