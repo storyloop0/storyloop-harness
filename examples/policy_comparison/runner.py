@@ -1,5 +1,6 @@
 """Run the complete fixed offline matrix and reject partial results."""
 import asyncio
+import re
 
 from storyloop_harness.context import ContextPolicy
 
@@ -21,7 +22,13 @@ def _validate_row(row, case, policy):
             or row['passed'] is not all(checks[name] for name in REQUIRED_CHECKS)
             or not isinstance(result, dict)
             or not {'window_broken', 'action_outcome', 'state_version_delta',
-                    'state_sha256', 'events_sha256'}.issubset(result)):
+                    'state_sha256', 'events_sha256'}.issubset(result)
+            or type(result['window_broken']) is not bool
+            or not isinstance(result['action_outcome'], str)
+            or type(result['state_version_delta']) is not int
+            or any(not isinstance(result[name], str)
+                   or re.fullmatch(r'[0-9a-f]{64}', result[name]) is None
+                   for name in ('state_sha256', 'events_sha256'))):
         raise ValueError('policy task returned an incomplete or inconsistent row')
 
 

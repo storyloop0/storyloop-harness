@@ -64,6 +64,15 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     assert malformed['passed'] is False
     assert len(malformed['rows']) == 12
     assert all(row['error']['type'] == 'ValueError' for row in malformed['rows'])
+    async def unhashable_task(*, case, policy):
+        return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
+                'checks': {name: True for name in ('scope', 'dispatch_match', 'state',
+                                                   'model_calls', 'recent_clue', 'old_clue_expected')},
+                'result': {'window_broken': True, 'action_outcome': 'accepted',
+                           'state_version_delta': 1, 'state_sha256': [], 'events_sha256': 'a' * 64}}
+    unhashable = run_local(task_fn=unhashable_task)
+    assert unhashable['passed'] is False
+    assert len(unhashable['rows']) == 12
     monkeypatch.setattr(__main__, 'run_local', lambda: {'passed': False, 'rows': report['rows'][:1]})
     assert __main__.main([]) == 1
     assert json.loads(capsys.readouterr().out)['passed'] is False
