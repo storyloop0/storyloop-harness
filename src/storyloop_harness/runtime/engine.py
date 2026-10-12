@@ -1,7 +1,7 @@
 """Default single-call engine facade."""
 from contextvars import ContextVar
 import logging
-from storyloop_harness.context import ContextBudget, ContextProjection
+from storyloop_harness.context import ContextBudget, ContextProjection, ContextPolicy
 from dataclasses import replace
 from storyloop_harness.contracts import TurnInput, TurnOutcome
 from storyloop_harness.ports import GameStore, ModelPort, CampaignContext
@@ -42,7 +42,8 @@ class TurnEngine:
                  *, clock: StoryClock | None = None, program: CampaignContext | None = None,
                  max_responders: int = 3, context_budget: ContextBudget | None = None,
                  max_steps: int = 8, telemetry: Telemetry | None = None,
-                 checkpoint_summarizer: CheckpointSummarizer | None = None):
+                 checkpoint_summarizer: CheckpointSummarizer | None = None,
+                 context_policy: ContextPolicy | None = None):
         self.package = package
         self.store = _RecordingStore(store)
         self.checkpoints = (CheckpointLifecycle(self.store, package, checkpoint_summarizer)
@@ -51,7 +52,7 @@ class TurnEngine:
             self.store, package, SingleSceneGenerator(model, package, telemetry),
             SceneContextProjector(self.store, package, clock=clock, program=program,
                                   max_responders=max_responders,
-                                  context_budget=context_budget),
+                                  context_budget=context_budget, context_policy=context_policy),
             clock=clock, max_steps=max_steps, telemetry=telemetry)
 
     def _snapshot_for(self, turn: TurnInput):

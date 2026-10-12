@@ -2,6 +2,7 @@
 from storyloop_harness.context import ContextBudget, ContextProjection
 from storyloop_harness.context.selection import Selection
 from storyloop_harness.context.history import history_selection
+from storyloop_harness.context.policy import ContextPolicy, policy_spec
 from storyloop_harness.core.contracts import Snapshot
 from storyloop_harness.core.store_port import GameStore
 from storyloop_harness.runtime.player_preferences import current_player_preferences
@@ -16,13 +17,15 @@ class SceneContextProjector:
 
     def __init__(self, store: GameStore, package: ScenarioPackage,
                  *, max_responders: int = 3, context_budget: ContextBudget | None = None,
-                 clock: StoryClock | None = None, program=None) -> None:
+                 clock: StoryClock | None = None, program=None,
+                 context_policy: ContextPolicy | None = None) -> None:
         self.store = store
         self.package = package
         self.max_responders = max_responders
         self.context_budget = context_budget or ContextBudget()
         self.clock = clock
         self.program = program
+        self.context_policy, self.policy_spec = policy_spec(context_policy)
 
     def project(self, snapshot: Snapshot, player_text: str) -> ContextProjection:
         selection = Selection()
@@ -67,7 +70,7 @@ class SceneContextProjector:
         player_checkpoint = self.store.agent_context_checkpoint(snapshot.game_id, 'player')
         player_history = []
         self._collect_history(selection, snapshot, 'player', player_checkpoint,
-            player_text, ('player_history',), recent=10, older=4, excerpt_chars=700)
+            player_text, ('player_history',), window=self.policy_spec.player)
         npc_contexts = []
         for index, actor_id in enumerate(focus):
             role_card = actor_card(actor_id).strip()
@@ -85,12 +88,14 @@ class SceneContextProjector:
                 owner=actor_id, version=snapshot.version if generated else None,
                 optional=True, floor=role_card[:160])
             checkpoint = self.store.agent_context_checkpoint(snapshot.game_id, actor_id)
-            self._collect_checkpoint(selection, snapshot, actor_id, checkpoint, (*path, 'own_summary'))
+            if self.policy_spec.use_checkpoint:
+                self._collect_checkpoint(selection, snapshot, actor_id, checkpoint, (*path, 'own_summary'))
             self._collect_history(selection, snapshot, actor_id, checkpoint, player_text,
-                (*path, 'own_history'), recent=8, older=3, excerpt_chars=400)
+                (*path, 'own_history'), window=self.policy_spec.npc)
             npc_contexts.append({'id': actor_id, 'name': actor_name(actor_id),
                 'role_card': '', 'own_summary': '', 'own_history': []})
-        self._collect_checkpoint(selection, snapshot, 'player', player_checkpoint, ('player_summary',))
+        if self.policy_spec.use_checkpoint:
+            self._collect_checkpoint(selection, snapshot, 'player', player_checkpoint, ('player_summary',))
         campaign = snapshot.data.get("campaign")
         story_context = (self.program.current_action_context(snapshot)
                          if self.program is not None else {})
@@ -286,7 +291,10 @@ class SceneContextProjector:
                 if request[field]:
                     origin((field,), request[field], f'snapshot:campaign:{source_field}', owner='player')
 
-        return selection.fit(request, self.package, self.context_budget, nearby, focus)
+        return selection.fit(request, self.package, self.context_budget, nearby, focus,
+                             policy_id=self.context_policy.value,
+                             history_scope=('recipient-history-after-checkpoint' if self.policy_spec.use_checkpoint
+                                            else 'recipient-history-all-committed'))
 
     def _collect_checkpoint(self, selection, snapshot, owner, checkpoint, path):
         if checkpoint.summary:
@@ -300,10 +308,11 @@ class SceneContextProjector:
                 owner=owner, version=checkpoint.through_version, optional=True)
 
     def _collect_history(self, selection, snapshot, owner, checkpoint, query, path,
-                         *, recent, older, excerpt_chars):
-        entries = self.store.agent_context_entries(snapshot.game_id, owner, checkpoint.through_version)
+                         *, window):
+        cursor = checkpoint.through_version if self.policy_spec.use_checkpoint else -1
+        entries = self.store.agent_context_entries(snapshot.game_id, owner, cursor)
         for entry, value, selected, reason in history_selection(entries, query,
-                recent=recent, older=older, excerpt_chars=excerpt_chars):
+                recent=window.recent, older=window.older, excerpt_chars=window.excerpt_chars):
             raw = {'channel': entry.channel, 'text': entry.content, 'tick': entry.tick}
             selection.add('history', entry.entry_id, path, raw, value,
                 reason=reason, selected=selected, omission=None if selected else 'rank_limit',

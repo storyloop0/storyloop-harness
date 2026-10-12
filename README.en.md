@@ -154,6 +154,8 @@ Public rules, source resolutions, player input, authoritative state and a nonemp
 
 The inspected scope includes history after each recipient's checkpoint, the last four player inputs, the last six player observations, visible worldbook entries, public/system source facts and milestone candidates, plus private role material/history for selected responders. Unselected actors' private context and other saves are outside that scope. The engine uses its clock, story program, responder limit and explicit player preference scope.
 
+Select a fixed policy with `TurnEngine(..., context_policy=ContextPolicy.RELEVANT)` after importing `ContextPolicy` from `storyloop_harness.context`. Omitting the argument keeps `ContextPolicy.DEFAULT` (`scene-projection-v1`). `RECENT` uses recent raw experiences only; `RELEVANT` allows more older relevant experiences. Both read all committed history for that recipient and omit checkpoints. `SUMMARY` combines a checkpoint with shorter raw-history windows, falling back to raw history when no checkpoint exists. All four share the same scope protection, budget fitter and authoritative state rules. Reports identify the selected `policy_id`; `testing.project_scene_request` also accepts `context_policy`.
+
 ### Character experience checkpoints
 
 Pass an async `checkpoint_summarizer` to `TurnEngine` to check player and character histories after newly committed successful turns. It receives a `CheckpointRequest` imported from `storyloop_harness.context`, with the save, actor, scenario identity, previous summary and new source entries, and returns a new summary of at most 1200 characters. The summarizer should preserve important earlier information and source clues. By default, at least 16 new entries trigger a checkpoint while at least eight recent raw entries, including their complete version groups, remain. Without a summarizer, the engine makes no extra model call.
@@ -172,12 +174,14 @@ From the repository root, after installing the harness:
 
 ```sh
 python -m examples.evaluation --output result.json
+python -m examples.policy_comparison --output policy-comparison.json
 # Optional native Langfuse runner (SDK 4.17.0):
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
 ```
 
 - Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
+- The policy comparison runs three fixed clue cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. Actual provider tokens and cost are `null`. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using the Harness default policy.
 - `--langfuse` writes traces/scores via the [native experiment runner](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk); set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and optionally `LANGFUSE_BASE_URL`. Server ingestion is reported as unverified.
 - `--live` calls a real provider and incurs charges; set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, `STORY_MODEL_BASE_URL`. Fixtures establish runtime contracts, not narrative quality or character secrecy in shared model context. Edit the task's default `ContextBudget` for small budget comparisons.
 
@@ -187,7 +191,7 @@ python -m examples.evaluation --langfuse --output result.json
 | --- | --- |
 | Top-level package | `ScenarioPackage`, `TurnEngine`, `TurnInput`, `TurnOutcome`, `GameStore`, `ModelPort`, `CampaignContext` |
 | `contracts`, `ports` | Turn data and injected model/store/campaign protocols |
-| `context` | `ContextBudget`, `ContextProjection`, `ProjectionReport`, `MaterialDecision`, `ContextBudgetExceeded` |
+| `context` | `ContextPolicy`, `ContextBudget`, `ContextProjection`, `ProjectionReport`, `MaterialDecision`, `ContextBudgetExceeded` |
 | `advanced` | Event, work and story-clock contracts |
 | `generation` | Structured model transport, formatting and action suggestions |
 | `telemetry`, `usage` | Tracing and scoped token usage, without pricing policy |
@@ -201,7 +205,7 @@ python -m examples.evaluation --langfuse --output result.json
 - Legacy saves with pending `npc_reply` work are rejected before generation or world writes; recreate them.
 - The SQLite adapter provides per-commit transactions and version conflict checks; applications own cross-process task claims and conflict retries.
 - Saved-turn replay and expected-version commits do not establish end-to-end billing recovery or distributed execution guarantees.
-- Long-session memory, reproducible quality/cost comparisons and stronger execution recovery remain development directions.
+- Real-model quality/cost comparisons, further long-session memory validation and stronger execution recovery remain development directions.
 
 ```sh
 python -m pip install -e '.[test,evaluation]' build
