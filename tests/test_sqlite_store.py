@@ -14,14 +14,16 @@ def event(id='e', **kw):
 
 def test_reopen_and_detachment(tmp_path):
     path = tmp_path / 'game.db'
-    data = {'value': 0, 'nested': {'a': []}}
+    data = {'value': 0, 'nested': {'a': []}, 'scenario': {'id': 'test', 'version': '1'}}
     with store(path) as s:
         s.create_game(Snapshot('g', 0, 0, data), (PendingWork('w', 'npc', 1, 2, None, {'ids': ['a']}),))
         data['nested']['a'].append('changed')
         s.commit('g', 0, event(), (Observation('o', 'e', 'a', 'speech', 'hello', 1),), ())
-        s.save_agent_context_checkpoint('g', 'a', -1, AgentContextCheckpoint(1, 'summary'))
+        s.save_agent_context_checkpoint('g', 'a', -1,
+            AgentContextCheckpoint(1, 'summary', 'test', '1', ('o',)))
     with store(path) as s:
-        assert s.load('g') == Snapshot('g', 1, 1, {'value': 1, 'nested': {'a': []}})
+        assert s.load('g') == Snapshot('g', 1, 1, {'value': 1, 'nested': {'a': []},
+                                                   'scenario': {'id': 'test', 'version': '1'}})
         assert s.event_exists('g', 'e')
         details = s.event_details('g', 'e'); details['target_ids'].append('b')
         assert s.event_details('g', 'e')['target_ids'] == ['a']
@@ -29,7 +31,7 @@ def test_reopen_and_detachment(tmp_path):
         assert [o.content for o in s.observations_for('g', 'a')] == ['hello']
         assert s.observations_for('g', 'b') == []
         assert [e.content for e in s.agent_context_entries('g', 'a')] == ['hello']
-        assert s.agent_context_checkpoint('g', 'a') == AgentContextCheckpoint(1, 'summary')
+        assert s.agent_context_checkpoint('g', 'a') == AgentContextCheckpoint(1, 'summary', 'test', '1', ('o',))
         assert s.agent_context_checkpoint('g', 'b') == AgentContextCheckpoint()
         assert [w.work_id for w in s.ready_work('g', 1)] == ['w']
 
@@ -53,14 +55,16 @@ def test_failed_commit_rolls_back_consumption_and_partial_rows(tmp_path):
 def test_independent_connections_cas_and_checkpoint(tmp_path):
     path = tmp_path / 'game.db'
     with store(path) as first, store(path) as second:
-        first.create_game(Snapshot('g', 0, 0, {'value': 0}))
-        second.commit('g', 0, event(), (), ())
+        first.create_game(Snapshot('g', 0, 0, {'value': 0, 'scenario': {'id': 'test', 'version': '1'}}))
+        second.commit('g', 0, event(), (Observation('o', 'e', 'a', 'speech', 'hello', 1),), ())
         with pytest.raises(ValueError, match='version changed'):
             first.commit('g', 0, event('stale'), (), ())
         assert not first.event_exists('g', 'stale')
-        first.save_agent_context_checkpoint('g', 'a', -1, AgentContextCheckpoint(1, 'first'))
+        first.save_agent_context_checkpoint('g', 'a', -1,
+            AgentContextCheckpoint(1, 'first', 'test', '1', ('o',)))
         with pytest.raises(ValueError, match='checkpoint changed'):
-            second.save_agent_context_checkpoint('g', 'a', -1, AgentContextCheckpoint(2, 'second'))
+            second.save_agent_context_checkpoint('g', 'a', -1,
+                AgentContextCheckpoint(2, 'second', 'test', '1', ('o',)))
         assert second.agent_context_checkpoint('g', 'a').summary == 'first'
 
 

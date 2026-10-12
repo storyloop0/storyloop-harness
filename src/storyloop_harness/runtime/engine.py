@@ -1,5 +1,6 @@
 """Default single-call engine facade."""
 from contextvars import ContextVar
+import logging
 from storyloop_harness.context import ContextBudget, ContextProjection
 from dataclasses import replace
 from storyloop_harness.contracts import TurnInput, TurnOutcome
@@ -12,8 +13,11 @@ from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.world.scenario import ScenarioPackage
 from storyloop_harness.agents.scene_turn import SingleSceneGenerator
 from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.context.checkpoints import CheckpointLifecycle, CheckpointSummarizer
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
+
+logger = logging.getLogger(__name__)
 
 
 class _RecordingStore:
@@ -37,9 +41,12 @@ class TurnEngine:
     def __init__(self, store: GameStore, package: ScenarioPackage, model: ModelPort,
                  *, clock: StoryClock | None = None, program: CampaignContext | None = None,
                  max_responders: int = 3, context_budget: ContextBudget | None = None,
-                 max_steps: int = 8, telemetry: Telemetry | None = None):
+                 max_steps: int = 8, telemetry: Telemetry | None = None,
+                 checkpoint_summarizer: CheckpointSummarizer | None = None):
         self.package = package
         self.store = _RecordingStore(store)
+        self.checkpoints = (CheckpointLifecycle(self.store, package, checkpoint_summarizer)
+                            if checkpoint_summarizer is not None else None)
         self.session = SingleCallGameSession(
             self.store, package, SingleSceneGenerator(model, package, telemetry),
             SceneContextProjector(self.store, package, clock=clock, program=program,
@@ -70,6 +77,12 @@ class TurnEngine:
             with collect_usage() as usage:
                 result = await self.session.run_turn(turn.game_id, turn.player_text, turn.turn_id,
                                                      progress=progress, max_tick=max_tick)
+                if self.checkpoints is not None and events:
+                    for actor_id in ('player', *(actor for actor, _ in self.package.actor_cards)):
+                        try:
+                            await self.checkpoints.refresh(turn.game_id, actor_id)
+                        except Exception as exc:
+                            logger.warning('checkpoint refresh failed (%s)', type(exc).__name__)
             return replace(result, events=tuple(events), model_usage=tuple(usage.records))
         finally:
             self.store.records.reset(token)

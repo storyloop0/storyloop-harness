@@ -3,6 +3,7 @@ from copy import deepcopy
 from threading import RLock
 from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry, PlayerInput
 from storyloop_harness.core.state import apply_event
+from storyloop_harness.core.checkpoints import validate_checkpoint
 
 
 class InMemoryGameStore:
@@ -50,6 +51,10 @@ class InMemoryGameStore:
             for observation in observations:
                 if observation.event_id not in game['events']:
                     raise ValueError('observation refers to an unknown event')
+                source_version = game['events'][observation.event_id][0]
+                checkpoint = game['checkpoints'].get(observation.recipient_id)
+                if checkpoint is not None and source_version <= checkpoint.through_version:
+                    raise ValueError('observation refers to a checkpointed event')
                 if observation.observation_id in game['observations']:
                     raise ValueError('duplicate observation')
                 game['observations'][observation.observation_id] = deepcopy(observation)
@@ -115,10 +120,10 @@ class InMemoryGameStore:
 
     def save_agent_context_checkpoint(self, game_id, actor_id, expected_version, checkpoint):
         with self._lock:
-            if checkpoint.through_version <= expected_version or not checkpoint.summary.strip():
-                raise ValueError('context checkpoint must advance with a nonempty summary')
             if self.agent_context_checkpoint(game_id, actor_id).through_version != expected_version:
                 raise ValueError('agent context checkpoint changed')
+            validate_checkpoint(self.load(game_id), self.agent_context_entries(game_id, actor_id, expected_version),
+                                expected_version, checkpoint)
             self._games[game_id]['checkpoints'][actor_id] = checkpoint
 
     def pending_work(self, game_id):

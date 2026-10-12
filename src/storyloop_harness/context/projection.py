@@ -290,6 +290,11 @@ class SceneContextProjector:
 
     def _collect_checkpoint(self, selection, snapshot, owner, checkpoint, path):
         if checkpoint.summary:
+            scenario = snapshot.data.get('scenario', {})
+            if (not isinstance(scenario, dict) or checkpoint.scenario_id != scenario.get('id')
+                    or checkpoint.scenario_version != scenario.get('version')
+                    or checkpoint.through_version > snapshot.version):
+                raise ValueError('context checkpoint scenario does not match game')
             selection.add('checkpoint', f'{owner}:{checkpoint.through_version}', path,
                 checkpoint.summary, checkpoint.summary[:1200], reason='summary',
                 owner=owner, version=checkpoint.through_version, optional=True)
