@@ -154,6 +154,12 @@ Public rules, source resolutions, player input, authoritative state and a nonemp
 
 The inspected scope includes history after each recipient's checkpoint, the last four player inputs, the last six player observations, visible worldbook entries, public/system source facts and milestone candidates, plus private role material/history for selected responders. Unselected actors' private context and other saves are outside that scope. The engine uses its clock, story program, responder limit and explicit player preference scope.
 
+### Character experience checkpoints
+
+Pass an async `checkpoint_summarizer` to `TurnEngine` to check player and character histories after newly committed successful turns. It receives a `CheckpointRequest` imported from `storyloop_harness.context`, with the save, actor, scenario identity, previous summary and new source entries, and returns a new summary of at most 1200 characters. The summarizer should preserve important earlier information and source clues. By default, at least 16 new entries trigger a checkpoint while at least eight recent raw entries, including their complete version groups, remain. Without a summarizer, the engine makes no extra model call.
+
+SQLite records the actor, scenario identity, covered version and source IDs for the latest batch; original events and observations remain. A summary failure does not undo the committed turn or advance the cursor, so a new turn can retry. Replaying the same turn does not summarize again. Once the cursor advances, an observation for that actor cannot be added to a covered event; record later observations under a new event. Summaries cache character experiences rather than authoritative world state. The shared model may still see selected characters' private context. Existing SQLite files are not migrated automatically; applications implementing `GameStore` must update their checkpoint storage for this contract.
+
 `selected` and `truncated` are independent. `omission_reason` records rank/item limits, field clipping (`field_limit`), or material/window trimming. Source facts and milestone cues yield before recent experiences; prompt omission does not change milestone eligibility.
 
 `testing.project_scene_request(store, package, game_id, player_text, context_budget=ContextBudget())` returns only a detached request using the same projector; optional arguments include `clock`, `program` and `max_responders`.

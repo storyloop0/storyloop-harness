@@ -10,6 +10,7 @@ from storyloop_harness.core.contracts import (
     PlayerInput, Snapshot, WorldEvent, Effect,
 )
 from storyloop_harness.core.state import apply_event
+from storyloop_harness.core.checkpoints import validate_checkpoint
 
 
 def _encode(value):
@@ -52,6 +53,8 @@ class SQLiteGameStore:
             CREATE TABLE IF NOT EXISTS checkpoints (
                 game_id TEXT NOT NULL REFERENCES games(game_id), actor_id TEXT NOT NULL,
                 version INTEGER NOT NULL, summary TEXT NOT NULL,
+                scenario_id TEXT NOT NULL, scenario_version TEXT NOT NULL,
+                source_ids TEXT NOT NULL,
                 PRIMARY KEY (game_id, actor_id));
         ''')
 
@@ -133,6 +136,14 @@ class SQLiteGameStore:
             for observation in observations:
                 if not self.event_exists(game_id, observation.event_id):
                     raise ValueError('observation refers to an unknown event')
+                source_version = self._db.execute(
+                    'SELECT version FROM events WHERE game_id=? AND event_id=?',
+                    (game_id, observation.event_id)).fetchone()[0]
+                cursor = self._db.execute(
+                    'SELECT version FROM checkpoints WHERE game_id=? AND actor_id=?',
+                    (game_id, observation.recipient_id)).fetchone()
+                if cursor is not None and source_version <= cursor[0]:
+                    raise ValueError('observation refers to a checkpointed event')
                 try:
                     self._db.execute('INSERT INTO observations VALUES (?,?,?,?)',
                                      (game_id, observation.observation_id, observation.event_id, _encode(asdict(observation))))
@@ -203,17 +214,21 @@ class SQLiteGameStore:
 
     def agent_context_checkpoint(self, game_id, actor_id):
         self.load(game_id)
-        row = self._db.execute('SELECT version,summary FROM checkpoints WHERE game_id=? AND actor_id=?', (game_id, actor_id)).fetchone()
-        return AgentContextCheckpoint(*row) if row else AgentContextCheckpoint()
+        row = self._db.execute('SELECT version,summary,scenario_id,scenario_version,source_ids FROM checkpoints WHERE game_id=? AND actor_id=?', (game_id, actor_id)).fetchone()
+        return AgentContextCheckpoint(*row[:4], tuple(json.loads(row[4]))) if row else AgentContextCheckpoint()
 
     def save_agent_context_checkpoint(self, game_id, actor_id, expected_version, checkpoint):
         with self._transaction():
-            if checkpoint.through_version <= expected_version or not checkpoint.summary.strip():
-                raise ValueError('context checkpoint must advance with a nonempty summary')
             if self.agent_context_checkpoint(game_id, actor_id).through_version != expected_version:
                 raise ValueError('agent context checkpoint changed')
-            self._db.execute('INSERT INTO checkpoints VALUES (?,?,?,?) ON CONFLICT(game_id,actor_id) DO UPDATE SET version=excluded.version,summary=excluded.summary',
-                             (game_id, actor_id, checkpoint.through_version, checkpoint.summary))
+            validate_checkpoint(self.load(game_id), self._context_entries(game_id, actor_id, expected_version),
+                                expected_version, checkpoint)
+            self._db.execute('''INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(game_id,actor_id) DO UPDATE SET version=excluded.version,
+                summary=excluded.summary,scenario_id=excluded.scenario_id,
+                scenario_version=excluded.scenario_version,source_ids=excluded.source_ids''',
+                (game_id, actor_id, checkpoint.through_version, checkpoint.summary,
+                 checkpoint.scenario_id, checkpoint.scenario_version, _encode(checkpoint.source_ids)))
 
     def pending_work(self, game_id):
         self.load(game_id)

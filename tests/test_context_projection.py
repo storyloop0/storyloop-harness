@@ -159,17 +159,22 @@ def test_generator_rechecks_mutated_request_and_passes_one_effective_cap():
 
 
 def test_generated_identity_checkpoint_and_singleton_references_are_precise():
-    from storyloop_harness.core.contracts import AgentContextCheckpoint
+    from storyloop_harness.core.contracts import AgentContextCheckpoint, Observation, WorldEvent
     store, package = fixture()
+    event = WorldEvent('checkpoint-source', 'synthetic', None, None, 0, ())
+    store.commit('game', store.load('game').version, event,
+        (Observation('guide-source', event.event_id, 'guide', 'private_message', 'source', 0),), ())
+    store.save_agent_context_checkpoint('game', 'guide', -1,
+        AgentContextCheckpoint(1, 'PRIVATE_SUMMARY ' * 60, package.package_id,
+                               package.version, ('guide-source',)))
     snapshot = store.load('game')
     snapshot.data['actor_profiles'] = {'guide': {'name':'Generated Guide', 'role_card':'PRIVATE_ROLE ' * 200}}
-    store.save_agent_context_checkpoint('game', 'guide', -1, AgentContextCheckpoint(0, 'PRIVATE_SUMMARY ' * 200))
     result = SceneContextProjector(store, package, max_responders=1).project(snapshot,'guide hello')
     role = next(d for d in result.report.decisions if d.source_kind == 'role')
     checkpoint = next(d for d in result.report.decisions if d.source_kind == 'checkpoint')
     assert role.source_id == 'snapshot:actor_profiles:guide:role_card' and role.owner == 'guide'
     assert role.state_version == snapshot.version and role.truncated
-    assert checkpoint.source_id == 'guide:0' and checkpoint.state_version == 0 and checkpoint.truncated
+    assert checkpoint.source_id == 'guide:1' and checkpoint.state_version == 1
     name = next(d for d in result.report.decisions if d.field == 'npc_contexts.0.name')
     assert name.source_id == 'snapshot:actor_profiles:guide:name'
     action = next(d for d in result.report.decisions if d.field == 'player_action')

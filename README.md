@@ -151,6 +151,12 @@ print(projection.report.to_dict())
 
 检查范围包括各接收者检查点之后的历史、最近四次玩家输入、最近六条玩家观察、可见世界书条目、公开/系统来源事实和里程碑候选，以及选中回复角色的私有卡片与历史。未选中角色的私有上下文和其他存档不在范围内。引擎使用自身的时钟、故事程序、回复角色上限和显式玩家偏好作用域。
 
+### 角色经历 checkpoint
+
+给 `TurnEngine` 传入异步 `checkpoint_summarizer` 后，新提交的成功回合会对玩家及剧本角色分别检查历史。函数接收从 `storyloop_harness.context` 导入的 `CheckpointRequest`（存档、角色、剧本身份、旧摘要、本次来源条目），返回不超过 1200 字符的新摘要；应保留重要的旧摘要信息和来源线索。默认至少积累 16 条经历才触发，并保留最近至少 8 条原始记录及其完整版本组。未配置摘要函数时不发起额外模型调用。
+
+SQLite 保存角色与剧本身份、覆盖版本和本次来源 ID；原始事件与观察始终保留。摘要失败不会撤销已提交回合，也不会推进游标；新回合可重试，同一回合的重放不额外生成摘要。游标推进后，不接受给已覆盖事件补写该角色的观察；需以新事件记录后续观察。摘要是角色经历缓存，不能代替世界状态；共享模型仍可能看到选中角色的私有上下文。现有 SQLite 存档格式不自动迁移，应用接入新的 `GameStore` 契约时需同步更新自己的 checkpoint 存储实现。
+
 `selected` 与 `truncated` 相互独立。`omission_reason` 记录排序/条数限制、字段裁剪（`field_limit`）或材料/窗口预算裁剪。来源事实与里程碑提示先于近期经历让出预算；从提示词中省略里程碑不会改变它的触发资格。
 
 `testing.project_scene_request(store, package, game_id, player_text, context_budget=ContextBudget())` 使用同一投影器，仅返回独立请求；还接受 `clock`、`program` 和 `max_responders`。

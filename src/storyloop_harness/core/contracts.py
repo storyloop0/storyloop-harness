@@ -64,6 +64,9 @@ class AgentContextCheckpoint:
 
     through_version: int = -1
     summary: str = ""
+    scenario_id: str = ""
+    scenario_version: str = ""
+    source_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
