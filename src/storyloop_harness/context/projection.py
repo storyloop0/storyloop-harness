@@ -292,7 +292,9 @@ class SceneContextProjector:
                     origin((field,), request[field], f'snapshot:campaign:{source_field}', owner='player')
 
         return selection.fit(request, self.package, self.context_budget, nearby, focus,
-                             policy_id=self.context_policy.value)
+                             policy_id=self.context_policy.value,
+                             history_scope=('recipient-history-after-checkpoint' if self.policy_spec.use_checkpoint
+                                            else 'recipient-history-all-committed'))
 
     def _collect_checkpoint(self, selection, snapshot, owner, checkpoint, path):
         if checkpoint.summary:

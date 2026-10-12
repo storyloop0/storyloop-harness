@@ -62,6 +62,8 @@ def test_named_policies_preserve_default_and_select_fixed_windows():
     assert 'brasskey731' in str(summary.request['player_summary'])
     assert not any(d.source_kind == 'checkpoint' for d in recent.report.decisions)
     assert not any(d.source_kind == 'checkpoint' for d in relevant.report.decisions)
+    assert 'recipient-history-all-committed' in recent.report.scope
+    assert 'recipient-history-after-checkpoint' in summary.report.scope
 
 
 def test_invalid_policy_and_budget_failure_are_labeled():

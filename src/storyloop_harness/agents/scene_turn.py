@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 from storyloop_harness.adapters.agentscope_message import Msg
 from storyloop_harness.ports import ModelPort
@@ -31,6 +32,7 @@ class SingleSceneGenerator:
         request = deepcopy(context.request)
         report = estimate_scene_request(request, self.package, context.budget,
                                         decisions=context.report.decisions)
+        report = replace(report, policy_id=context.report.policy_id, scope=context.report.scope)
         system = scene_system_prompt(self.package)
         schema = scene_schema.scene_output_schema(self.package)
         with self.telemetry.span(
