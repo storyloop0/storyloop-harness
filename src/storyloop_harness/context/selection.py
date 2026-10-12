@@ -56,7 +56,7 @@ class Selection:
             target[path[-1]] = values
         return result
 
-    def fit(self, base, package, budget, nearby, focus):
+    def fit(self, base, package, budget, nearby, focus, *, policy_id='scene-projection-v1'):
         # Source cues yield whole before recent experiences. Then discard
         # optional history/lore and summaries before reducing role elaboration.
         priority = {'source_fact': 0, 'milestone': 1, 'history': 2,
@@ -69,6 +69,7 @@ class Selection:
             report = estimate_scene_request(request, package, budget,
                 decisions=tuple(item.decision for item in self.items),
                 scope='ordinary-single-scene:recipient-history-after-checkpoint,visible-worldbook,public-system-source,focus-private-context')
+            report = replace(report, policy_id=policy_id)
             material_over = size(request) > budget.max_material_tokens
             if not material_over and report.total_tokens <= budget.context_window_tokens:
                 return ContextProjection(request, nearby, focus, report, budget)
