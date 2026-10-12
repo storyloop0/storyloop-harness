@@ -12,6 +12,16 @@ from storyloop_harness.storage import SQLiteGameStore
 from storyloop_harness.testing import OfflineModel
 
 
+def test_checkpoint_lifecycle_has_public_integration_imports():
+    from storyloop_harness.context import CheckpointLifecycle as PublicLifecycle
+    from storyloop_harness.context import CheckpointRequest
+    from storyloop_harness.advanced import validate_checkpoint
+
+    assert PublicLifecycle is CheckpointLifecycle
+    assert CheckpointRequest.__name__ == 'CheckpointRequest'
+    assert callable(validate_checkpoint)
+
+
 def seed(store, package, game_id, count, *, start=0):
     if start == 0:
         package.seed_game(store, game_id)
