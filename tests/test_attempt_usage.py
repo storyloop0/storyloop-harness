@@ -326,6 +326,32 @@ def test_no_collector_does_not_leak_into_later_collector():
     asyncio.run(run())
 
 
+def test_no_collector_preserves_response_identity_and_does_not_close_source():
+    class Source:
+        def __init__(self):
+            self.closes = 0
+        def __aiter__(self):
+            return self
+        async def __anext__(self):
+            raise StopAsyncIteration
+        async def aclose(self):
+            self.closes += 1
+            raise RuntimeError('unexpected observer cleanup')
+
+    async def run():
+        tracker = AttemptTracker('m', 'task')
+        source = Source()
+        response = SimpleNamespace(usage=None)
+        with tracker.invocation():
+            assert tracker._invocation.get() is None
+            async with tracker.attempt():
+                assert tracker._attempt.get() is None
+                assert tracker.observe(source) is source
+                assert tracker.observe(response) is response
+        assert source.closes == 0
+    asyncio.run(run())
+
+
 def test_two_models_keep_their_own_model_and_task_labels():
     async def run():
         client = httpx2.AsyncClient(transport=httpx2.MockTransport(

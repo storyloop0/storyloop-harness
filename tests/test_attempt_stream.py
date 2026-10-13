@@ -53,6 +53,30 @@ class ControlledStream(httpx2.AsyncByteStream):
         self.closed = True
 
 
+class CountingIterator:
+    def __init__(self, *, read_error=None, close_error=None):
+        self.reads = 0
+        self.closes = 0
+        self.read_error = read_error
+        self.close_error = close_error
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        self.reads += 1
+        if self.reads == 1:
+            return SimpleNamespace(usage=None)
+        if self.read_error is not None:
+            raise self.read_error
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        self.closes += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
 async def run_stream(stream, *, bad=False):
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(
         lambda _: httpx2.Response(200, headers={"content-type": "text/event-stream"},
@@ -259,5 +283,64 @@ def test_cleanup_error_after_normal_stream_is_recorded_as_failure():
                     async for _ in tracker.observe(CloseFailure()):
                         pass
         assert attempts.records[0].outcome == 'failed'
+        assert attempts.records[0].error_type == 'RuntimeError'
+    asyncio.run(run())
+
+
+def test_early_wrapper_close_failure_propagates_and_records_failure():
+    async def run():
+        tracker = AttemptTracker('m', 'task')
+        source = CountingIterator(close_error=RuntimeError('close failed'))
+        with collect_attempts() as attempts, tracker.invocation():
+            with pytest.raises(RuntimeError, match='close failed'):
+                async with tracker.attempt():
+                    await anext(tracker.observe(source))
+        assert source.closes == 1
+        assert attempts.records[0].outcome == 'failed'
+        assert attempts.records[0].error_type == 'RuntimeError'
+        assert not attempts.records[0].stream_complete
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('boundary', ['unstarted', 'partial', 'normal', 'read_error', 'cancelled'])
+def test_attempt_closes_source_once_at_each_boundary(boundary):
+    async def run():
+        tracker = AttemptTracker('m', 'task')
+        source = CountingIterator(read_error=httpx2.ReadError('read failed')
+                                  if boundary == 'read_error' else None)
+        with collect_attempts() as attempts, tracker.invocation():
+            try:
+                async with tracker.attempt():
+                    observed = tracker.observe(source)
+                    if boundary != 'unstarted':
+                        await anext(observed)
+                    if boundary == 'normal':
+                        async for _ in observed:
+                            pass
+                    if boundary == 'read_error':
+                        await anext(observed)
+                    if boundary == 'cancelled':
+                        raise asyncio.CancelledError()
+            except (httpx2.ReadError, asyncio.CancelledError):
+                pass
+        assert source.closes == 1
+        assert attempts.records[0].stream_complete == (boundary == 'normal')
+        assert attempts.records[0].outcome == {
+            'read_error': 'failed', 'cancelled': 'cancelled',
+        }.get(boundary, 'succeeded')
+    asyncio.run(run())
+
+
+def test_attempt_closes_each_source_when_one_cleanup_fails():
+    async def run():
+        tracker = AttemptTracker('m', 'task')
+        first = CountingIterator(close_error=RuntimeError('first close failed'))
+        second = CountingIterator()
+        with collect_attempts() as attempts, tracker.invocation():
+            with pytest.raises(RuntimeError, match='first close failed'):
+                async with tracker.attempt():
+                    tracker.observe(first)
+                    tracker.observe(second)
+        assert (first.closes, second.closes) == (1, 1)
         assert attempts.records[0].error_type == 'RuntimeError'
     asyncio.run(run())

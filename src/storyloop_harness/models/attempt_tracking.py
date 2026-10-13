@@ -26,7 +26,7 @@ class _Attempt:
     usage: ModelUsage | None = None
     usage_state: str = "missing"
     stream_complete: bool = False
-    streams: list[object] = field(default_factory=list)
+    streams: list[tuple[object, object]] = field(default_factory=list)
 
 
 class AttemptTracker:
@@ -42,7 +42,11 @@ class AttemptTracker:
 
     @contextmanager
     def invocation(self) -> Iterator[None]:
-        token = self._invocation.set(_Invocation(str(uuid4()), _active_attempts.get()))
+        collector = _active_attempts.get()
+        if collector is None:
+            yield
+            return
+        token = self._invocation.set(_Invocation(str(uuid4()), collector))
         try:
             yield
         finally:
@@ -64,14 +68,20 @@ class AttemptTracker:
             primary = error
             raise
         finally:
+            cleanup_failure: BaseException | None = None
             try:
-                for stream in current.streams:
+                for stream, close_source in current.streams:
                     try:
-                        await stream.aclose()
+                        try:
+                            await stream.aclose()
+                        finally:
+                            await close_source()
                     except BaseException as cleanup_error:
                         if primary is None:
                             primary = cleanup_error
-                            raise
+                            cleanup_failure = cleanup_error
+                if cleanup_failure is not None:
+                    raise cleanup_failure
             finally:
                 self._attempt.reset(token)
                 if invocation.collector is not None:
@@ -101,6 +111,16 @@ class AttemptTracker:
             return response
         if hasattr(response, "__aiter__"):
             source = response
+            source_closed = False
+
+            async def close_source():
+                nonlocal source_closed
+                if source_closed:
+                    return
+                source_closed = True
+                close = getattr(source, "aclose", None)
+                if close is not None:
+                    await close()
 
             async def observed():
                 primary: BaseException | None = None
@@ -110,19 +130,18 @@ class AttemptTracker:
                         yield chunk
                     current.stream_complete = True
                 except BaseException as error:
-                    primary = error
+                    if not isinstance(error, GeneratorExit):
+                        primary = error
                     raise
                 finally:
-                    close = getattr(source, "aclose", None)
-                    if close is not None:
-                        try:
-                            await close()
-                        except BaseException:
-                            if primary is None:
-                                raise
+                    try:
+                        await close_source()
+                    except BaseException:
+                        if primary is None:
+                            raise
 
             wrapper = observed()
-            current.streams.append(wrapper)
+            current.streams.append((wrapper, close_source))
             return wrapper
         self._snapshot(current, getattr(response, "usage", None))
         current.stream_complete = True
