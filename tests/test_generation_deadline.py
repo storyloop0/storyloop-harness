@@ -106,6 +106,75 @@ def test_user_cancellation_stays_cancelled_error():
     asyncio.run(run())
 
 
+def test_user_cancellation_stays_cancelled_after_sync_cleanup_crosses_deadline():
+    async def run():
+        entered = asyncio.Event()
+
+        async def transport(_request):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                time.sleep(0.25)
+                raise
+
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(transport))
+        model = create_test_model(http_client=client, sdk_retries=0,
+                                  generation_budget=GenerationBudget(3, 0.2))
+        try:
+            with collect_attempts() as attempts:
+                task = asyncio.create_task(model.generate_structured_output(
+                    [{'role': 'user', 'content': 'cancel'}], Reply))
+                await asyncio.wait_for(entered.wait(), 1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 1)
+            assert attempts.records[-1].outcome == 'cancelled'
+            assert attempts.records[-1].error_type == 'CancelledError'
+        finally:
+            await model.client.close()
+            await client.aclose()
+
+    asyncio.run(run())
+
+
+def test_user_cancellation_stays_cancelled_when_deadline_fires_during_cleanup():
+    async def run():
+        entered = asyncio.Event()
+        cleanup_cancelled = asyncio.Event()
+
+        async def transport(_request):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as external_cancel:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cleanup_cancelled.set()
+                    raise external_cancel
+
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(transport))
+        model = create_test_model(http_client=client, sdk_retries=0,
+                                  generation_budget=GenerationBudget(3, 0.2))
+        try:
+            with collect_attempts() as attempts:
+                task = asyncio.create_task(model.generate_structured_output(
+                    [{'role': 'user', 'content': 'cancel'}], Reply))
+                await asyncio.wait_for(entered.wait(), 1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 1)
+            assert cleanup_cancelled.is_set()
+            assert attempts.records[-1].outcome == 'cancelled'
+            assert attempts.records[-1].error_type == 'CancelledError'
+        finally:
+            await model.client.close()
+            await client.aclose()
+
+    asyncio.run(run())
+
+
 def test_late_synchronous_schema_validation_rejected():
     async def run():
         client = httpx2.AsyncClient(transport=httpx2.MockTransport(

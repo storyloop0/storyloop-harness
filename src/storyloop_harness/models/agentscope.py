@@ -11,7 +11,7 @@ from storyloop_harness.models.usage import record_model_usage
 from storyloop_harness.context import ContextBudget
 from storyloop_harness.models.request_guard import GuardedCompletions
 from storyloop_harness.models.attempt_tracking import AttemptTracker
-from storyloop_harness.models.generation_budget import GenerationBudget
+from storyloop_harness.models.generation_budget import GenerationBudget, GenerationTimeout
 from storyloop_harness.models.generation_control import controlled_generation, current_control, suspend_control
 
 ToolChoicePolicy = Literal["native", "auto_only"]
@@ -105,8 +105,8 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
                 response = await super()._call_api_with_structured_output(*args, **kwargs)
             except asyncio.CancelledError:
                 control = current_control(self._generation_control_key)
-                if control is not None:
-                    control.check_deadline()
+                if control is not None and control.owns_cancellation():
+                    raise GenerationTimeout() from None
                 raise
             control = current_control(self._generation_control_key)
             if control is not None:

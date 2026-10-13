@@ -18,10 +18,19 @@ class GenerationControl:
     owner: object
     task: asyncio.Task[object] | None
     sends: int = 0
+    timeout_scope: asyncio.Timeout | None = None
+    initial_cancels: int = 0
 
     def check_deadline(self) -> None:
         if monotonic() >= self.deadline:
             raise GenerationTimeout()
+
+    def owns_cancellation(self) -> bool:
+        # asyncio.Timeout adds exactly one cancellation. Another outstanding
+        # cancellation belongs to the caller and must keep its identity.
+        return (self.timeout_scope is not None and self.timeout_scope.expired()
+                and self.task is not None
+                and self.task.cancelling() == self.initial_cancels + 1)
 
     def claim_send(self) -> None:
         self.check_deadline()
@@ -66,6 +75,8 @@ async def controlled_generation(budget: GenerationBudget | None,
         timeout_scope = asyncio.timeout_at(control.deadline)
         try:
             async with timeout_scope:
+                control.timeout_scope = timeout_scope
+                control.initial_cancels = control.task.cancelling() if control.task else 0
                 yield control
                 control.check_deadline()
         except TimeoutError as error:

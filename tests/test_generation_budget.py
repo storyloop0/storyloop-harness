@@ -7,6 +7,7 @@ from unittest.mock import patch
 import httpx2
 import pytest
 from agentscope.tool import ToolChoice
+from openai import InternalServerError
 from pydantic import BaseModel
 
 from model_helpers import create_test_model
@@ -87,13 +88,12 @@ def test_bounded_provider_retries_are_agentscope_only_and_raw_sdk_unchanged():
                                   generation_budget=GenerationBudget(3, 90))
         model.retry_delay = 0
         try:
-            with pytest.raises(Exception) as error:
+            with pytest.raises(InternalServerError):
                 await model.generate_structured_output([{'role': 'user', 'content': 'hello'}], Reply)
-            assert type(error.value).__name__ != 'GenerationRequestLimitExceeded'
             assert len(sent) == 3
             assert model.client.max_retries == 2
             sent.clear()
-            with pytest.raises(Exception):
+            with pytest.raises(InternalServerError):
                 await model.client.chat.completions.create(model='offline-test', messages=[{'role': 'user', 'content': 'raw'}])
             assert len(sent) == 3
         finally:
