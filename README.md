@@ -137,17 +137,20 @@ model = CompatibleOpenAIChatModel(
 可以用独立的收集器查看结构化生成的每次尝试：
 
 ```python
-from storyloop_harness.usage import collect_attempts
+from storyloop_harness.usage import collect_attempts, summarize_attempt_usage
 
 with collect_attempts() as attempts:
     try:
         response = await model.generate_structured_output(messages, Reply)
-    finally:
-        for attempt in attempts.records:
-            print(attempt.ordinal, attempt.outcome, attempt.usage_state, attempt.usage)
+    except Exception as exc:
+        print(type(exc).__name__)
+
+summary = summarize_attempt_usage(attempts.records)
+print(summary.known_input_tokens, summary.known_output_tokens)
+print(summary.usage_complete)
 ```
 
-这里只记录 `CompatibleOpenAIChatModel` 结构化输出的逻辑尝试；SDK 内部 HTTP 重试不另计。流失败或取消时，已报告用量只是最后已知值，不一定覆盖全部费用。未知用量为 `None`。记录不含内容或异常消息，也不持久化；`collect_usage` 的计费行为不变。
+这里只记录 `CompatibleOpenAIChatModel` 结构化输出的逻辑尝试；SDK 内部 HTTP 重试不另计。不可变汇总会去除标识及内容完全相同的重复尝试，并按模型和任务合并已报告用量。已知 Token 小计也包含失败尝试的有效报告；没有已报告用量时为 `None`，不是零。`usage_complete` 只描述传入的非空结构化记录集：每条记录都必须有已报告用量，且流已完成。流失败或取消时，已报告用量只是最后已知值，不一定覆盖全部费用；汇总并非完整的供应商账单或整个回合的覆盖证明。记录不含内容或异常消息，也不持久化；`collect_usage` 的计费行为不变。
 
 ## 检查上下文与配置预算
 

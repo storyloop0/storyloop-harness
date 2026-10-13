@@ -140,17 +140,20 @@ The optional policy applies to `generate_structured_output` and calls with `stru
 To inspect structured generation attempts, wrap the awaited call with the independent collector:
 
 ```python
-from storyloop_harness.usage import collect_attempts
+from storyloop_harness.usage import collect_attempts, summarize_attempt_usage
 
 with collect_attempts() as attempts:
     try:
         response = await model.generate_structured_output(messages, Reply)
-    finally:
-        for attempt in attempts.records:
-            print(attempt.ordinal, attempt.outcome, attempt.usage_state, attempt.usage)
+    except Exception as exc:
+        print(type(exc).__name__)
+
+summary = summarize_attempt_usage(attempts.records)
+print(summary.known_input_tokens, summary.known_output_tokens)
+print(summary.usage_complete)
 ```
 
-This records logical attempts for `CompatibleOpenAIChatModel` structured output only; internal SDK HTTP retries do not add records. In a failed or cancelled stream, reported usage is the last known count, not necessarily the full cost. Unknown usage is `None`. Records contain no content or exception messages, are not persisted, and do not change `collect_usage` billing.
+This records logical attempts for `CompatibleOpenAIChatModel` structured output only; internal SDK HTTP retries do not add records. The immutable summary deduplicates identical attempt identities and groups reported usage by model and task. Known token totals include reported attempts even when generation fails; with no reported usage, they are `None` rather than zero. `usage_complete` describes only the supplied nonempty structured record set: every record must have reported usage and a completed stream. In a failed or cancelled stream, reported usage is the last known count, not necessarily the full cost. This is not a complete provider invoice or whole-turn coverage. Records contain no content or exception messages, are not persisted, and do not change `collect_usage` billing.
 
 ## Inspect and configure the budget
 
