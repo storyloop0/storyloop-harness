@@ -29,19 +29,24 @@ class UsageCollector:
     records: list[ModelUsage] = field(default_factory=list)
 
     def record(self, model: str, task: str, usage: object) -> None:
-        if usage is None:
-            raise RuntimeError("model did not report token usage; turn cannot be billed accurately")
-        details = getattr(usage, "metadata", None)
-        prompt_details = ((details.get("prompt_tokens_details") or details.get("input_tokens_details"))
-                          if isinstance(details, dict) else
-                          (getattr(details, "prompt_tokens_details", None)
-                           or getattr(details, "input_tokens_details", None)))
-        cached = getattr(usage, "cache_input_tokens", None)
-        if type(cached) is not int:
-            cached = (prompt_details.get("cached_tokens") if isinstance(prompt_details, dict)
-                      else getattr(prompt_details, "cached_tokens", None))
-        self.records.append(ModelUsage(model, task, usage.input_tokens, usage.output_tokens,
-                                       cached if type(cached) is int else 0))
+        self.records.append(model_usage_from_response(model, task, usage))
+
+
+def model_usage_from_response(model: str, task: str, usage: object) -> ModelUsage:
+    """Snapshot an AgentScope usage report using the billing cache-token rules."""
+    if usage is None:
+        raise RuntimeError("model did not report token usage; turn cannot be billed accurately")
+    details = getattr(usage, "metadata", None)
+    prompt_details = ((details.get("prompt_tokens_details") or details.get("input_tokens_details"))
+                      if isinstance(details, dict) else
+                      (getattr(details, "prompt_tokens_details", None)
+                       or getattr(details, "input_tokens_details", None)))
+    cached = getattr(usage, "cache_input_tokens", None)
+    if type(cached) is not int:
+        cached = (prompt_details.get("cached_tokens") if isinstance(prompt_details, dict)
+                  else getattr(prompt_details, "cached_tokens", None))
+    return ModelUsage(model, task, usage.input_tokens, usage.output_tokens,
+                      cached if type(cached) is int else 0)
 
 
 _active_usage: ContextVar[UsageCollector | None] = ContextVar("story_billing_usage", default=None)

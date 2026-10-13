@@ -121,6 +121,21 @@ if __name__ == "__main__":
 
 连接真实模型时提供 `ModelPort` 实现；`generation.CompatibleOpenAIChatModel` 适配器使用 AgentScope 2.0.9，凭据与路由由调用方提供。持久化游戏可使用 `storage.SQLiteGameStore`，或实现 `GameStore` 及其预期版本提交契约。
 
+可以用独立的收集器查看结构化生成的每次尝试：
+
+```python
+from storyloop_harness.usage import collect_attempts
+
+with collect_attempts() as attempts:
+    try:
+        response = await model.generate_structured_output(messages, Reply)
+    finally:
+        for attempt in attempts.records:
+            print(attempt.ordinal, attempt.outcome, attempt.usage_state, attempt.usage)
+```
+
+这里只记录 `CompatibleOpenAIChatModel` 结构化输出的逻辑尝试；SDK 内部 HTTP 重试不另计。流失败或取消时，已报告用量只是最后已知值，不一定覆盖全部费用。未知用量为 `None`。记录不含内容或异常消息，也不持久化；`collect_usage` 的计费行为不变。
+
 ## 检查上下文与配置预算
 
 在仓库根目录运行：
