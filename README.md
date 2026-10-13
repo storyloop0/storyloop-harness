@@ -143,9 +143,9 @@ projection = engine.project_context(
 print(projection.report.to_dict())
 ```
 
-上例也是默认限制：完整请求窗口 65,536 Token，预留输出 4,096、安全余量 256，序列化材料另设 16,000 Token 上限。`utf8-conservative-v1` 使用字符/UTF-8 启发式估算，并非服务商的精确 Token 数。`scene-projection-v1` 计入系统提示词、消息封装与转义、展开后的输出 schema、传输余量、输出预留和安全余量。AgentScope 适配器在 HTTP 前检查 SDK 格式化后的请求，并发送一个有效的 `max_completion_tokens` 上限。自定义 `ModelPort` 必须遵守这个有界调用契约。
+上例也是默认限制：完整请求窗口 65,536 Token，预留输出 4,096、安全余量 256，序列化材料另设 16,000 Token 上限。`utf8-conservative-v1` 使用字符/UTF-8 启发式估算，并非服务商的精确 Token 数。`scene-projection-v1` 计入系统提示词、消息封装与转义、展开后的输出 schema、传输余量、输出预留和安全余量。投影估算用于选择材料；AgentScope 适配器在每次模型尝试中只格式化一次请求，检查并发送同一份独立的最终请求快照，同时设置 `max_completion_tokens` 上限。检查仍是启发式估算；当前成功响应的用量不包含此前失败的回退尝试。自定义 `ModelPort` 必须遵守这个有界调用契约。
 
-公开规则、来源解析、玩家输入、权威状态以及选中角色的非空身份信息属于必要内容。如果无法放入预算，`ContextBudgetExceeded` 携带不含来源正文的报告，在模型调用和世界写入前失败。修改后的检查请求会在生成时重新估算。该策略覆盖普通场景请求及每次传输尝试，不计量整局支出。
+公开规则、来源解析、玩家输入、权威状态以及选中角色的非空身份信息属于必要内容。如果无法放入预算，`ContextBudgetExceeded` 携带不含来源正文的报告，在模型调用和世界写入前失败。修改后的检查请求会在生成时重新估算。每次 AgentScope 模型尝试都会重新检查；OpenAI SDK 内部 HTTP 重试复用已检查的独立快照。该策略不计量整局支出。
 
 ### 上下文选择规则参考
 

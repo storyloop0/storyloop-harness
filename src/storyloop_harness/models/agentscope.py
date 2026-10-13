@@ -8,7 +8,7 @@ from agentscope.tool import ToolChoice
 from storyloop_harness.adapters.telemetry import NoopTelemetry, Telemetry
 from storyloop_harness.models.usage import record_model_usage
 from storyloop_harness.context import ContextBudget
-from storyloop_harness.context.budget import estimate_request_envelope, enforce_window
+from storyloop_harness.models.request_guard import GuardedCompletions
 
 ToolChoicePolicy = Literal["native", "auto_only"]
 StructuredOutputTransport = Literal["auto", "tool_call"]
@@ -26,6 +26,7 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
         self.telemetry = telemetry or NoopTelemetry()
         self.task = task
         super().__init__(*args, **kwargs)
+        self.client.chat.completions = GuardedCompletions(self.client.chat.completions)
 
     @property
     def model_name(self) -> str:
@@ -76,39 +77,8 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
                 if extra is not None and (not isinstance(extra, dict) or critical.intersection(extra)):
                     raise ValueError("bounded calls reject budget-critical extra_body overrides")
             kwargs["max_completion_tokens"] = budget.output_tokens
-            formatted = await self.formatter.format(messages)
-            formatted_tools, formatted_choice = self._format_tools(tools, tool_choice)
-            options = {"model": model_name, "stream": self.stream,
-                       "max_completion_tokens": budget.output_tokens}
-            for name in ("temperature", "top_p"):
-                value = getattr(self.parameters, name)
-                if value is not None:
-                    options[name] = value
-            if self.parameters.thinking_enable and self.parameters.reasoning_effort:
-                options["reasoning_effort"] = self.parameters.reasoning_effort
-            if formatted_tools and not self.parameters.parallel_tool_calls:
-                options["parallel_tool_calls"] = False
-            if formatted_choice is not None:
-                options["tool_choice"] = formatted_choice
-            if self.parameters.voice is not None:
-                options["audio"] = {"voice": self.parameters.voice, "format": "pcm16"}
-                options["modalities"] = ["text", "audio"]
-            options.update(kwargs)
-            options.pop("extra_body", None)
-            extra_body = kwargs.get("extra_body") if "extra_body" in kwargs else self.extra_body
-            # AgentScope installs these after generate_kwargs when tools or
-            # streaming are enabled. OpenAI then merges extra_body into the
-            # JSON request with later-key precedence, so apply SDK defaults
-            # before that final merge.
-            if formatted_tools and not self.parameters.parallel_tool_calls:
-                options["parallel_tool_calls"] = False
-            if self.stream:
-                options["stream_options"] = {"include_usage": True}
-            options.update(extra_body or {})
-            report = estimate_request_envelope(formatted, formatted_tools, budget,
-                                               envelope_options=options)
-            enforce_window(report)
-        return await super()._call_api(model_name, messages, tools, tool_choice, **kwargs)
+        with self.client.chat.completions.scope(budget):
+            return await super()._call_api(model_name, messages, tools, tool_choice, **kwargs)
 
     async def generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
         messages = self._messages(messages)
