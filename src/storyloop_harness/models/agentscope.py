@@ -1,5 +1,6 @@
 """AgentScope model adaptation; callers supply configured credentials."""
 from __future__ import annotations
+import asyncio
 from typing import Literal
 from types import SimpleNamespace
 from agentscope.message import Msg as AgentScopeMsg, SystemMsg, UserMsg
@@ -10,6 +11,8 @@ from storyloop_harness.models.usage import record_model_usage
 from storyloop_harness.context import ContextBudget
 from storyloop_harness.models.request_guard import GuardedCompletions
 from storyloop_harness.models.attempt_tracking import AttemptTracker
+from storyloop_harness.models.generation_budget import GenerationBudget, GenerationTimeout
+from storyloop_harness.models.generation_control import controlled_generation, current_control, suspend_control
 
 ToolChoicePolicy = Literal["native", "auto_only"]
 StructuredOutputTransport = Literal["auto", "tool_call"]
@@ -20,15 +23,28 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
 
     def __init__(self, *args: object, tool_choice_policy: ToolChoicePolicy = "native",
                  structured_output_transport: StructuredOutputTransport = "auto",
-                 telemetry: Telemetry | None = None, task: str = "model", **kwargs: object) -> None:
+                 telemetry: Telemetry | None = None, task: str = "model",
+                 generation_budget: GenerationBudget | None = None, **kwargs: object) -> None:
         if structured_output_transport not in ("auto", "tool_call"):
             raise ValueError("unsupported structured_output_transport")
+        if generation_budget is not None and not isinstance(generation_budget, GenerationBudget):
+            raise TypeError("generation_budget must be GenerationBudget")
+        self.generation_budget = generation_budget
         self.tool_choice_policy = tool_choice_policy
         self.telemetry = telemetry or NoopTelemetry()
         self.task = task
         super().__init__(*args, **kwargs)
         self._attempt_tracker = AttemptTracker(self.model, task)
-        self.client.chat.completions = GuardedCompletions(self.client.chat.completions)
+        self._generation_control_key = object()
+        # The copied public SDK client owns no distinct transport. Keep it for
+        # this model's lifetime; only the original client owns close().
+        self._controlled_client = (self.client.with_options(max_retries=0)
+                                   if generation_budget is not None else None)
+        controlled_resource = (self._controlled_client.chat.completions
+                               if self._controlled_client is not None else None)
+        self.client.chat.completions = GuardedCompletions(
+            self.client.chat.completions, controlled_resource, self._generation_control_key,
+        )
 
     @property
     def model_name(self) -> str:
@@ -85,9 +101,23 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
 
     async def _call_api_with_structured_output(self, *args: object, **kwargs: object):
         async with self._attempt_tracker.attempt():
-            return await super()._call_api_with_structured_output(*args, **kwargs)
+            try:
+                response = await super()._call_api_with_structured_output(*args, **kwargs)
+            except asyncio.CancelledError:
+                control = current_control(self._generation_control_key)
+                if control is not None and control.owns_cancellation():
+                    raise GenerationTimeout() from None
+                raise
+            control = current_control(self._generation_control_key)
+            if control is not None:
+                control.check_deadline()
+            return response
 
     async def generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
+        async with controlled_generation(self.generation_budget, self._generation_control_key):
+            return await self._generate_structured_output(messages, structured_model, **kwargs)
+
+    async def _generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
         messages = self._messages(messages)
         with self.telemetry.span(
             f"model:{self.task}", {"task": self.task,
@@ -138,10 +168,11 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             input=messages if self.telemetry.capture_content else None,
         ) as generation:
             try:
-                response = await super().__call__(
-                    messages, tools=tools, tool_choice=tool_choice,
-                    **kwargs,
-                )
+                with suspend_control(self._generation_control_key):
+                    response = await super().__call__(
+                        messages, tools=tools, tool_choice=tool_choice,
+                        **kwargs,
+                    )
                 self._record_usage(response)
             except Exception as error:
                 generation.update(level="ERROR", status_message=type(error).__name__)

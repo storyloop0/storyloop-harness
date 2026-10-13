@@ -10,6 +10,7 @@ from openai import Omit, NOT_GIVEN
 
 from storyloop_harness.context import ContextBudget
 from storyloop_harness.context.budget import estimate_request_envelope, enforce_window
+from storyloop_harness.models.generation_control import current_control
 
 
 _TRANSPORT_FIELDS = frozenset({"timeout", "extra_headers", "extra_query"})
@@ -19,8 +20,11 @@ _CRITICAL_FIELDS = frozenset({"messages", "tools", "tool_choice", "max_tokens", 
 class GuardedCompletions:
     """Check a detached body snapshot, then send that same snapshot."""
 
-    def __init__(self, resource: Any) -> None:
+    def __init__(self, resource: Any, controlled_resource: Any = None,
+                 control_owner: object = None) -> None:
         self._resource = resource
+        self._controlled_resource = controlled_resource
+        self._control_owner = control_owner
         self._budget: ContextVar[ContextBudget | None] = ContextVar(
             "storyloop_request_budget", default=None,
         )
@@ -38,7 +42,8 @@ class GuardedCompletions:
 
     async def create(self, **kwargs: Any) -> Any:
         budget = self._budget.get()
-        if budget is None:
+        control = current_control(self._control_owner)
+        if budget is None and control is None:
             return await self._resource.create(**kwargs)
 
         # Transport arguments are not JSON body fields and can hold SDK
@@ -61,8 +66,12 @@ class GuardedCompletions:
                          if not isinstance(value, type(NOT_GIVEN))})
             # Omit removes a key after the merge, including an existing one.
             body = {key: value for key, value in body.items() if not isinstance(value, Omit)}
-        messages = body.pop("messages")
-        tools = body.pop("tools", None)
-        report = estimate_request_envelope(messages, tools, budget, envelope_options=body)
-        enforce_window(report)
+        if budget is not None:
+            messages = body.pop("messages")
+            tools = body.pop("tools", None)
+            report = estimate_request_envelope(messages, tools, budget, envelope_options=body)
+            enforce_window(report)
+        if control is not None:
+            control.claim_send()
+            return await self._controlled_resource.create(**snapshot)
         return await self._resource.create(**snapshot)
