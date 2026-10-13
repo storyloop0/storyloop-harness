@@ -442,6 +442,47 @@ def test_omitted_openai_fields_are_excluded_from_estimate_and_wire():
     asyncio.run(run())
 
 
+def test_extra_body_omit_removes_configured_and_provider_keys_at_exact_boundary():
+    from openai import Omit
+    from storyloop_harness.models import request_guard
+
+    async def run():
+        inspected = []
+        original_estimate = request_guard.estimate_request_envelope
+
+        def capture(messages, tools, budget, *, envelope_options):
+            inspected.append({'messages': messages, 'tools': tools, **envelope_options})
+            return original_estimate(messages, tools, budget,
+                                     envelope_options=envelope_options)
+
+        async with offline_model() as (model, sent):
+            messages = [{'role': 'user', 'content': 'omit override'}]
+            extra = {'temperature': Omit(), 'provider_absent': Omit()}
+            with patch.object(request_guard, 'estimate_request_envelope', capture):
+                await model(messages, structured_model=Reply, context_budget=ContextBudget(),
+                            extra_body=extra)
+                assert len(sent) == 1
+                assert 'temperature' not in sent[0] and 'provider_absent' not in sent[0]
+                assert inspected[0]['messages'] == sent[0]['messages']
+                assert inspected[0]['tools'] == sent[0]['tools']
+                assert 'temperature' not in inspected[0]
+                assert 'provider_absent' not in inspected[0]
+
+                report = wire_estimate(sent[0], ContextBudget())
+                exact = replace(ContextBudget(), context_window_tokens=report.total_tokens)
+                await model(messages, structured_model=Reply, context_budget=exact,
+                            extra_body=extra)
+                assert sent[1] == sent[0]
+                with pytest.raises(ContextBudgetExceeded) as error:
+                    await model(messages, structured_model=Reply,
+                                context_budget=replace(exact,
+                                                       context_window_tokens=report.total_tokens - 1),
+                                extra_body=extra)
+                assert error.value.report.total_tokens == report.total_tokens
+                assert len(sent) == 2
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('extra_body', [None, {'provider_flag': 'on'}])
 def test_ordinary_provider_body_options_pass_through(extra_body):
     async def run():

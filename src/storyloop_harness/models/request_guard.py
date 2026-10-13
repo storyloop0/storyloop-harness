@@ -57,6 +57,7 @@ class GuardedCompletions:
                 raise ValueError("bounded calls reject budget-critical extra_body overrides")
             # OpenAI applies extra_body last, replacing duplicate body keys.
             body.update(extra_body)
+            body = {key: value for key, value in body.items() if not isinstance(value, Omit)}
         messages = body.pop("messages")
         tools = body.pop("tools", None)
         report = estimate_request_envelope(messages, tools, budget, envelope_options=body)
