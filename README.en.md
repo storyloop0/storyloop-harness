@@ -124,6 +124,19 @@ To connect a live model, supply a `ModelPort` implementation; the
 supplies credentials and routing. To persist games, use `storage.SQLiteGameStore` or implement `GameStore` and
 its expected-version commit contract.
 
+To bound one structured generation, pass a policy when constructing the adapter:
+
+```python
+from storyloop_harness.generation import CompatibleOpenAIChatModel, GenerationBudget
+
+model = CompatibleOpenAIChatModel(
+    credential=credential, model=model_name,
+    generation_budget=GenerationBudget(max_requests=3, timeout_seconds=90),
+)
+```
+
+The optional policy applies to `generate_structured_output` and calls with `structured_model`; the library default is `None`. It counts completion sends across AgentScope retries and fallback strategies, with no SDK retries on those bounded calls. The deadline starts before formatting and covers waiting, response streaming and validation. Expiry cancels awaited work, while synchronous validation is checked when it returns. One generation is not a whole player turn; HTTP redirects may add transport requests. Ordinary calls and raw SDK use keep their existing retry settings. `GenerationRequestLimitExceeded` and `GenerationTimeout` have fixed messages. The policy does not alter usage collection or billing.
+
 To inspect structured generation attempts, wrap the awaited call with the independent collector:
 
 ```python

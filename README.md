@@ -121,6 +121,19 @@ if __name__ == "__main__":
 
 连接真实模型时提供 `ModelPort` 实现；`generation.CompatibleOpenAIChatModel` 适配器使用 AgentScope 2.0.9，凭据与路由由调用方提供。持久化游戏可使用 `storage.SQLiteGameStore`，或实现 `GameStore` 及其预期版本提交契约。
 
+可在构造适配器时限制一次结构化生成：
+
+```python
+from storyloop_harness.generation import CompatibleOpenAIChatModel, GenerationBudget
+
+model = CompatibleOpenAIChatModel(
+    credential=credential, model=model_name,
+    generation_budget=GenerationBudget(max_requests=3, timeout_seconds=90),
+)
+```
+
+此可选策略适用于 `generate_structured_output` 和传入 `structured_model` 的调用；库默认值为 `None`。它统计 AgentScope 重试与回退策略的完成请求发送次数；受限调用不执行 SDK 内部重试。时限从格式化前开始，涵盖等待、流式响应和校验；到期会取消正在等待的操作，同步校验返回后也会检查时限。一次生成不等于整个玩家回合；HTTP 重定向可能增加传输请求数。普通调用与原始 SDK 调用保留原有重试设置。`GenerationRequestLimitExceeded` 和 `GenerationTimeout` 使用固定错误消息。该策略不改变用量收集和计费。
+
 可以用独立的收集器查看结构化生成的每次尝试：
 
 ```python

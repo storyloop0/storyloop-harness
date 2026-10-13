@@ -14,5 +14,10 @@ from storyloop_harness.models.agentscope import (
     StructuredOutputTransport,
     ToolChoicePolicy,
 )
+from storyloop_harness.models.generation_budget import (
+    GenerationBudget,
+    GenerationRequestLimitExceeded,
+    GenerationTimeout,
+)
 
-__all__ = ['ActionOption', 'ActionOptionAdvisor', 'CompatibleOpenAIChatModel', 'Msg', 'StructuredOutputTransport', 'ThinkingSafeOpenAIChatFormatter', 'ToolChoicePolicy']
+__all__ = ['ActionOption', 'ActionOptionAdvisor', 'CompatibleOpenAIChatModel', 'GenerationBudget', 'GenerationRequestLimitExceeded', 'GenerationTimeout', 'Msg', 'StructuredOutputTransport', 'ThinkingSafeOpenAIChatFormatter', 'ToolChoicePolicy']
