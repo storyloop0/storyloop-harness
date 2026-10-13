@@ -55,8 +55,11 @@ class GuardedCompletions:
         if extra_body is not None:
             if not isinstance(extra_body, dict) or _CRITICAL_FIELDS.intersection(extra_body):
                 raise ValueError("bounded calls reject budget-critical extra_body overrides")
-            # OpenAI applies extra_body last, replacing duplicate body keys.
-            body.update(extra_body)
+            # OpenAI removes NotGiven from extra_body before its merge; an
+            # absent override must leave an existing body value intact.
+            body.update({key: value for key, value in extra_body.items()
+                         if not isinstance(value, type(NOT_GIVEN))})
+            # Omit removes a key after the merge, including an existing one.
             body = {key: value for key, value in body.items() if not isinstance(value, Omit)}
         messages = body.pop("messages")
         tools = body.pop("tools", None)

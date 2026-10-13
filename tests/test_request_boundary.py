@@ -483,6 +483,53 @@ def test_extra_body_omit_removes_configured_and_provider_keys_at_exact_boundary(
     asyncio.run(run())
 
 
+def test_extra_body_not_given_matches_native_sdk_merge_order_and_budget_boundary():
+    from openai import NOT_GIVEN
+    from storyloop_harness.models import request_guard
+
+    async def run():
+        inspected = []
+        original_estimate = request_guard.estimate_request_envelope
+
+        def capture(messages, tools, budget, *, envelope_options):
+            inspected.append({'messages': messages, **envelope_options})
+            return original_estimate(messages, tools, budget,
+                                     envelope_options=envelope_options)
+
+        async with offline_model() as (model, sent):
+            kwargs = {
+                'model': 'offline-test',
+                'messages': [{'role': 'user', 'content': 'not-given override'}],
+                'temperature': 0.7,
+                'stream': False,
+                'max_completion_tokens': 4096,
+                'extra_body': {'temperature': NOT_GIVEN, 'provider_absent': NOT_GIVEN},
+            }
+            await model.client.chat.completions._resource.create(**kwargs)
+            assert sent[0]['temperature'] == 0.7
+            assert 'provider_absent' not in sent[0]
+
+            with patch.object(request_guard, 'estimate_request_envelope', capture):
+                with model.client.chat.completions.scope(ContextBudget()):
+                    await model.client.chat.completions.create(**kwargs)
+                assert sent[1] == sent[0]
+                assert inspected[0] == sent[1]
+
+                report = wire_estimate(sent[0], ContextBudget())
+                exact = replace(ContextBudget(), context_window_tokens=report.total_tokens)
+                with model.client.chat.completions.scope(exact):
+                    await model.client.chat.completions.create(**kwargs)
+                assert sent[2] == sent[0]
+                with model.client.chat.completions.scope(
+                    replace(exact, context_window_tokens=report.total_tokens - 1)
+                ):
+                    with pytest.raises(ContextBudgetExceeded) as error:
+                        await model.client.chat.completions.create(**kwargs)
+                assert error.value.report.total_tokens == report.total_tokens
+                assert len(sent) == 3
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('extra_body', [None, {'provider_flag': 'on'}])
 def test_ordinary_provider_body_options_pass_through(extra_body):
     async def run():
