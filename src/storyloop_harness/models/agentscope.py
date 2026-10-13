@@ -9,6 +9,7 @@ from storyloop_harness.adapters.telemetry import NoopTelemetry, Telemetry
 from storyloop_harness.models.usage import record_model_usage
 from storyloop_harness.context import ContextBudget
 from storyloop_harness.models.request_guard import GuardedCompletions
+from storyloop_harness.models.attempt_tracking import AttemptTracker
 
 ToolChoicePolicy = Literal["native", "auto_only"]
 StructuredOutputTransport = Literal["auto", "tool_call"]
@@ -26,6 +27,7 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
         self.telemetry = telemetry or NoopTelemetry()
         self.task = task
         super().__init__(*args, **kwargs)
+        self._attempt_tracker = AttemptTracker(self.model, task)
         self.client.chat.completions = GuardedCompletions(self.client.chat.completions)
 
     @property
@@ -78,7 +80,12 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
                     raise ValueError("bounded calls reject budget-critical extra_body overrides")
             kwargs["max_completion_tokens"] = budget.output_tokens
         with self.client.chat.completions.scope(budget):
-            return await super()._call_api(model_name, messages, tools, tool_choice, **kwargs)
+            response = await super()._call_api(model_name, messages, tools, tool_choice, **kwargs)
+            return self._attempt_tracker.observe(response)
+
+    async def _call_api_with_structured_output(self, *args: object, **kwargs: object):
+        async with self._attempt_tracker.attempt():
+            return await super()._call_api_with_structured_output(*args, **kwargs)
 
     async def generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
         messages = self._messages(messages)
@@ -89,9 +96,10 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             input=messages if self.telemetry.capture_content else None,
         ) as generation:
             try:
-                response = await super().generate_structured_output(
-                    messages, structured_model, **kwargs,
-                )
+                with self._attempt_tracker.invocation():
+                    response = await super().generate_structured_output(
+                        messages, structured_model, **kwargs,
+                    )
             except Exception as error:
                 generation.update(level="ERROR", status_message=type(error).__name__)
                 raise

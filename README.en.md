@@ -124,6 +124,21 @@ To connect a live model, supply a `ModelPort` implementation; the
 supplies credentials and routing. To persist games, use `storage.SQLiteGameStore` or implement `GameStore` and
 its expected-version commit contract.
 
+To inspect structured generation attempts, wrap the awaited call with the independent collector:
+
+```python
+from storyloop_harness.usage import collect_attempts
+
+with collect_attempts() as attempts:
+    try:
+        response = await model.generate_structured_output(messages, Reply)
+    finally:
+        for attempt in attempts.records:
+            print(attempt.ordinal, attempt.outcome, attempt.usage_state, attempt.usage)
+```
+
+This records logical attempts for `CompatibleOpenAIChatModel` structured output only; internal SDK HTTP retries do not add records. In a failed or cancelled stream, reported usage is the last known count, not necessarily the full cost. Unknown usage is `None`. Records contain no content or exception messages, are not persisted, and do not change `collect_usage` billing.
+
 ## Inspect and configure the budget
 
 Run from the repository root:
