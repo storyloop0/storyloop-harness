@@ -107,9 +107,6 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     if emitted:
                         rows.extend(emitted)
-                    else:
-                        rows.append({'case_id': case['id'], 'policy_id': policy.value,
-                                     'passed': False, 'error': {'type': 'CancelledError'}})
                     try:
                         finalize(cancelled=True)
                     except Exception:

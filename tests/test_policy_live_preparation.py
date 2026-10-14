@@ -121,6 +121,97 @@ def test_cancellation_preserves_partial_report_and_original_identity(tmp_path):
     assert caught_again.value is original
 
 
+def test_cancellation_without_task_evidence_leaves_pair_incomplete(tmp_path):
+    from examples.policy_comparison.runner import run_local
+    original = asyncio.CancelledError('CANCEL_SENTINEL')
+    output = tmp_path / 'partial.json'
+
+    async def cancelled(*, case, policy, model_mode, model_factory, evidence_sink):
+        raise original
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        run_local(task_fn=cancelled, case_ids=('old-clue',), output_path=output)
+    assert caught.value is original
+    report = json.loads(output.read_text(encoding='utf-8'))
+    assert report['status'] == 'cancelled'
+    assert report['passed'] is False
+    assert len(report['coverage']['selected_pairs']) == 4
+    assert report['coverage']['completed_pairs'] == []
+    assert report['rows'] == []
+
+
+def test_cleanup_cancellation_propagates_after_success_and_emits_failure():
+    from examples.policy_comparison.task import task
+    from examples.policy_comparison.cases import CASES
+    from examples.evaluation.task import Fixture
+    from storyloop_harness.context import ContextPolicy
+    original = asyncio.CancelledError('CLEANUP_SENTINEL')
+    captured = []
+
+    class Client:
+        async def close(self):
+            raise original
+
+    def factory():
+        model = Fixture()
+        model.client = Client()
+        return model
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        asyncio.run(task(case=CASES[0], policy=ContextPolicy.DEFAULT,
+                         model_mode='sdk_mock', model_factory=factory,
+                         evidence_sink=captured.append))
+    assert caught.value is original
+    assert len(captured) == 1
+    assert captured[0]['passed'] is False
+    assert captured[0]['error'] == {'type': 'CancelledError'}
+
+
+def test_cleanup_cancellation_preserves_active_business_exception():
+    from examples.policy_comparison.task import task
+    from examples.policy_comparison.cases import CASES
+    from storyloop_harness.context import ContextPolicy
+    original = ValueError('BUSINESS_SENTINEL')
+    captured = []
+
+    class Model:
+        async def __call__(self, messages, **kwargs):
+            raise original
+
+    class Client:
+        async def close(self):
+            raise asyncio.CancelledError('CLEANUP_SENTINEL')
+
+    def factory():
+        model = Model()
+        model.client = Client()
+        return model
+
+    with pytest.raises(ValueError) as caught:
+        asyncio.run(task(case=CASES[0], policy=ContextPolicy.DEFAULT,
+                         model_mode='sdk_mock', model_factory=factory,
+                         evidence_sink=captured.append))
+    assert caught.value is original
+    assert len(captured) == 1
+    assert captured[0]['error'] == {'type': 'ValueError'}
+
+
+def test_timed_capture_uses_base_capture(monkeypatch):
+    from examples.evaluation.task import CaptureModel
+    from examples.policy_comparison.task import TimedCaptureModel
+    called = []
+
+    async def capture(self, messages, **kwargs):
+        called.append(messages)
+        return 'captured'
+
+    monkeypatch.setattr(CaptureModel, '__call__', capture)
+    model = TimedCaptureModel(object())
+    assert asyncio.run(model([{'content': '{}'}])) == 'captured'
+    assert called == [[{'content': '{}'}]]
+    assert model.generation_seconds >= 0
+
+
 def test_native_cancellation_keeps_attempt_and_closes_model():
     from examples.policy_comparison.task import task
     from examples.policy_comparison.cases import CASES

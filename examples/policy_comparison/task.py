@@ -7,6 +7,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
@@ -32,14 +33,9 @@ class TimedCaptureModel(CaptureModel):
         self.generation_seconds = None
 
     async def __call__(self, messages, **kwargs):
-        self.calls += 1
-        content = messages[-1]['content']
-        if isinstance(content, list):
-            content = ''.join(part['text'] for part in content if part.get('type') == 'text')
-        self.request = json.loads(content)
         started = perf_counter()
         try:
-            return await self.delegate(messages, **kwargs)
+            return await super().__call__(messages, **kwargs)
         finally:
             self.generation_seconds = perf_counter() - started
 
@@ -236,7 +232,16 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
         if delegate is not None and model_mode != 'fixture':
             client = getattr(delegate, 'client', None)
             if client is not None:
+                active_error = sys.exc_info()[1]
                 try:
                     await client.close()
-                except BaseException:
-                    pass
+                except BaseException as cleanup_error:
+                    if active_error is None:
+                        evidence['error'] = {'type': type(cleanup_error).__name__}
+                        evidence['passed'] = False
+                        if evidence_sink is not None:
+                            try:
+                                evidence_sink(evidence)
+                            except Exception:
+                                pass
+                        raise
