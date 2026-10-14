@@ -121,6 +121,55 @@ def test_failed_commit_resumes_from_snapshot_without_generation(tmp_path):
         assert asyncio.run(engine.run_turn(request)).model_usage == ()
 
 
+def test_recovery_does_not_spend_an_exhausted_execution_budget(tmp_path):
+    """Stored generation can commit and replay after another actual send used the quota."""
+    import httpx2
+    from model_helpers import create_test_model
+    from storyloop_harness.generation import ExecutionBudget, execution_budget_scope
+
+    package = ScenarioPackage.load(EXAMPLE)
+    path = tmp_path / 'execution-recovery.db'
+    request = TurnInput('game', 'Hello', 'turn-1', package.version)
+    with FailOnceStore(path) as store:
+        package.seed_game(store, 'game')
+        with pytest.raises(RuntimeError, match='injected commit'):
+            asyncio.run(recovery_engine(store, package, OfflineModel()).run_turn(request))
+
+    async def resume():
+        sent = []
+        async def transport(request):
+            sent.append(request)
+            return httpx2.Response(200, json={
+                'id': 'offline', 'created': 0, 'model': 'offline-test',
+                'object': 'chat.completion', 'choices': [{
+                    'index': 0, 'finish_reason': 'stop',
+                    'message': {'role': 'assistant', 'content': 'ok'},
+                }],
+            })
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(transport))
+        model = create_test_model(http_client=client)
+        try:
+            with SQLiteGameStore(path) as store:
+                engine = recovery_engine(store, package, ForbiddenModel())
+                async with execution_budget_scope(ExecutionBudget(1, 30)) as control:
+                    await model.client.chat.completions.create(
+                        model='offline-test', messages=[{'role': 'user', 'content': 'hi'}])
+                    with collect_attempts() as attempts:
+                        outcome = await engine.run_turn(request)
+                        replay = await engine.run_turn(request)
+                    assert control.sends == len(sent) == 1
+                    assert outcome.model_usage == replay.model_usage == ()
+                    assert not attempts.records
+                    assert replay.events == ()
+                    assert_one_linked_input(store, request)
+                    assert_one_npc_delivery(store, request)
+                    assert engine.generated_scene_snapshot('game', 'turn-1').success_usage()
+        finally:
+            await model.client.close()
+            await client.aclose()
+    asyncio.run(resume())
+
+
 def test_changed_input_rejected_before_model(tmp_path):
     package = ScenarioPackage.load(EXAMPLE)
     with FailOnceStore(tmp_path / 'mismatch.db') as store:
