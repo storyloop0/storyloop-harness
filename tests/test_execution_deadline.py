@@ -15,11 +15,68 @@ from storyloop_harness.generation import (
 )
 from storyloop_harness.runtime.turn_progress import emit
 from storyloop_harness.models.execution_control import current_execution_control
+from storyloop_harness.models.generation_control import controlled_generation
 from storyloop_harness.usage import collect_attempts
 
 
 class Reply(BaseModel):
     prose: str
+
+
+@pytest.mark.parametrize('execution,local,expected', [
+    (0.04, 0.02, GenerationTimeout),
+    (0.02, 0.04, ExecutionTimeout),
+])
+def test_earlier_deadline_wins_when_both_timeouts_fire_after_blocked_loop(
+    execution, local, expected,
+):
+    async def run():
+        with pytest.raises(expected):
+            async with execution_budget_scope(ExecutionBudget(6, execution)):
+                async with controlled_generation(GenerationBudget(3, local), object()):
+                    time.sleep(0.08)
+                    await asyncio.Event().wait()
+
+    asyncio.run(run())
+
+
+def test_later_generation_keeps_its_own_earlier_deadline():
+    async def run():
+        with pytest.raises(GenerationTimeout):
+            async with execution_budget_scope(ExecutionBudget(6, 0.06)):
+                async with controlled_generation(GenerationBudget(3, 0.2), object()):
+                    pass
+                async with controlled_generation(GenerationBudget(3, 0.02), object()):
+                    time.sleep(0.08)
+                    await asyncio.Event().wait()
+
+    asyncio.run(run())
+
+
+def test_external_cancel_identity_survives_both_deadlines_during_cleanup():
+    async def call(original):
+        async with execution_budget_scope(ExecutionBudget(6, 0.04)):
+            async with controlled_generation(GenerationBudget(3, 0.02), object()):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError as error:
+                    original.append(error)
+                    time.sleep(0.08)
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        raise error
+
+    async def run():
+        original = []
+        task = asyncio.create_task(call(original))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert original and caught.value is original[0]
+
+    asyncio.run(run())
 
 
 def completion():

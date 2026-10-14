@@ -21,6 +21,7 @@ class ExecutionControl:
     sends: int = 0
     timeout_scope: asyncio.Timeout | None = None
     initial_cancels: int = 0
+    expired_generation_deadline: float | None = None
 
     def check_deadline(self) -> None:
         if monotonic() >= self.deadline:
@@ -95,8 +96,11 @@ async def execution_budget_scope(budget: ExecutionBudget) -> AsyncIterator[Execu
                 yield control
                 check_deadlines(control, None)
         except TimeoutError as error:
-            if isinstance(error, ExecutionTimeout) or not timeout_scope.expired():
+            if isinstance(error, (ExecutionTimeout, GenerationTimeout)) or not timeout_scope.expired():
                 raise
+            if (control.expired_generation_deadline is not None
+                    and control.expired_generation_deadline < control.deadline):
+                raise GenerationTimeout() from None
             raise ExecutionTimeout() from None
     finally:
         _active_execution.reset(token)
