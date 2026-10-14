@@ -15,5 +15,11 @@ dependencies = ["pydantic>=2,<3", "agentscope==2.0.9"]
 test = ["pytest>=8,<10"]
 evaluation = ["langfuse==4.17.0"]
 
+[project.scripts]
+storyloop-harness-demo = 'storyloop_harness.demo:main'
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+storyloop_harness = ['demo_scenario/*.json']

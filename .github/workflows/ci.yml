@@ -18,9 +18,11 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/harness-venv"
           "$RUNNER_TEMP/harness-venv/bin/python" -m pip install dist/*.whl pytest
-          cp -r examples "$RUNNER_TEMP/harness-examples"
-          cp tests/test_import_boundary.py "$RUNNER_TEMP/test_import_boundary.py"
           cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/harness-venv/bin/storyloop-harness-demo"
+          "$RUNNER_TEMP/harness-venv/bin/python" -I -m storyloop_harness.demo
+          cp -r "$GITHUB_WORKSPACE/examples" "$RUNNER_TEMP/harness-examples"
+          cp "$GITHUB_WORKSPACE/tests/test_import_boundary.py" "$RUNNER_TEMP/test_import_boundary.py"
           "$RUNNER_TEMP/harness-venv/bin/python" -I harness-examples/offline_turn.py
           cd "$RUNNER_TEMP/harness-examples"
           "$RUNNER_TEMP/harness-venv/bin/python" -m evaluation

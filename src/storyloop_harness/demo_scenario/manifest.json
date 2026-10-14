@@ -1,0 +1,17 @@
+{
+  "id": "installed-harbor-demo",
+  "version": "1.0",
+  "time_unit": "tick",
+  "presentation_mode": "interactive",
+  "worldbook": "worldbook.json",
+  "opening": "You arrive at a quiet harbor. A dockhand is coiling a rope beside the pier.",
+  "actors": [{"id": "dockhand", "name": "Dockhand", "card": "dockhand_card"}],
+  "initial_state": {
+    "world": {"location": "harbor"},
+    "actors": {
+      "player": {"location": "harbor"},
+      "dockhand": {"location": "harbor"}
+    }
+  },
+  "initial_work": []
+}
