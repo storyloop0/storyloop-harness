@@ -12,12 +12,12 @@
 
 ## 先看一个回合
 
-下面是 `examples/offline_turn.py` 对输入 `Hello` 的实际终端输出。它使用确定性模型，无需密钥、不请求模型服务，也不产生模型服务费用；用于检查运行流程，不代表真实模型的叙事质量。
+下面是安装后演示对输入 `Hello` 的故事输出节选。它使用确定性模型，无需密钥、不请求模型服务，也不产生模型服务费用；用于检查运行流程，不代表真实模型的叙事质量。
 
 ```text
 The dockhand coils a rope and waves you toward the arriving boat.
 
-【码头工】
+【Dockhand】
 The morning boat has arrived.
 Snapshot version: 2
 ```
@@ -221,6 +221,7 @@ python -m examples.evaluation --langfuse --output result.json
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
 - 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；真实服务商 Token 与成本为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+- 策略对照可用 `--case`、`--policy` 选择子集；报告区分选中、完成和排除的组合。加 `--live` 时必须明确选一个案例和策略，每次生成采用 3 次/90 秒限制，记录成功、失败或取消的已知尝试用量；成本仍为 `null`。取消保存部分证据后以 130 退出，未完成组合不算完成。当前真实调用入口仅经离线 SDK transport 验证。
 - `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
 - `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。
 

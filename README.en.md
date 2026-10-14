@@ -12,12 +12,12 @@ Turn free-form player input into scenes and persistent world state. StoryLoop Ha
 
 ## See one turn
 
-This is the actual terminal output of `examples/offline_turn.py` for input `Hello`. It uses a deterministic model: no key, provider requests or model service charges. It demonstrates the runtime flow, not live-model narrative quality. The character label is preserved as printed.
+This is an excerpt of the installed demo's story output for input `Hello`. It uses a deterministic model: no key, provider requests or model service charges. It demonstrates the runtime flow, not live-model narrative quality.
 
 ```text
 The dockhand coils a rope and waves you toward the arriving boat.
 
-【码头工】
+【Dockhand】
 The morning boat has arrived.
 Snapshot version: 2
 ```
@@ -224,6 +224,7 @@ python -m examples.evaluation --langfuse --output result.json
 
 - Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
 - The policy comparison runs three fixed clue cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. Actual provider tokens and cost are `null`. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using the Harness default policy.
+- Use `--case` and `--policy` to select a subset; coverage distinguishes selected, completed and excluded pairs. `--live` requires exactly one explicit case and policy, applies 3 requests/90 seconds per generation, and retains known attempt usage on success, failure or cancellation. Cost remains `null`. Cancellation writes partial evidence and exits 130; unfinished pairs stay incomplete. The live entry point has only been verified with offline SDK transports.
 - `--langfuse` writes traces/scores via the [native experiment runner](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk); set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and optionally `LANGFUSE_BASE_URL`. Server ingestion is reported as unverified.
 - `--live` calls a real provider and incurs charges; set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, `STORY_MODEL_BASE_URL`. Fixtures establish runtime contracts, not narrative quality or character secrecy in shared model context. Edit the task's default `ContextBudget` for small budget comparisons.
 
