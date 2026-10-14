@@ -165,6 +165,8 @@ Import `ExecutionBudget` and `execution_budget_scope` from `storyloop_harness.ge
 
 Standalone applications can import `GeneratedSceneRecovery` from `storyloop_harness.advanced` and pass `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")` to `TurnEngine`. The identity must represent non-secret model configuration; the store must implement the separate snapshot port. A validated scene is saved before the first world commit. Matching input, scenario content, generation configuration and base state can reuse it after restart without projection or model work. Already committed events resume persisted work. Historical success usage is available separately through `engine.generated_scene_snapshot(...).success_usage()` and never enters fresh `model_usage` or attempt records. A crash before save can repeat a provider call; this does not provide whole-turn atomicity, billing recovery or multiworker ownership. Recovery is disabled by default.
 
+`engine.inspect_generated_scene_recovery(turn)` checks a snapshot without mutation and returns the public frozen `GeneratedSceneRecoveryInspection(snapshot, committed)`, or `None` when absent. Services holding only an input SHA-256 can use `inspect_generated_scene_recovery_fingerprint(game_id, turn_id, input_hash, scenario_version)`. Both share binding and event-reference validation with execution and perform no projection, model calls or writes. `advanced.snapshot_state_fingerprint(snapshot)` exposes the same world-data fingerprint for external recovery evidence.
+
 ## Inspect and configure the budget
 
 Run from the repository root:
