@@ -16,10 +16,28 @@ from storyloop_harness.context import ContextBudget, ContextBudgetExceeded
 from storyloop_harness import ScenarioPackage, TurnEngine, TurnInput
 from storyloop_harness.storage import SQLiteGameStore
 from storyloop_harness.models.attempt_tracking import AttemptTracker
+from storyloop_harness.models.usage import capture_success_usage, record_model_usage
 
 
 class Reply(BaseModel):
     prose: str
+
+
+def test_passive_success_capture_preserves_outer_collector_and_errors():
+    from types import SimpleNamespace
+    usage = SimpleNamespace(input_tokens=7, output_tokens=3)
+    with collect_usage() as outer, capture_success_usage() as scene:
+        record_model_usage('fixture', 'scene', usage)
+    assert outer.records == scene.records
+    assert scene.coverage == 'reported'
+    with collect_usage() as outer, capture_success_usage() as scene:
+        with pytest.raises(RuntimeError, match='did not report'):
+            record_model_usage('fixture', 'scene', None)
+    assert outer.records == scene.records == []
+    assert scene.coverage == 'missing'
+    with capture_success_usage() as scene:
+        record_model_usage('fixture', 'scene', SimpleNamespace(input_tokens=-1, output_tokens=2))
+    assert scene.coverage == 'invalid'
 
 
 def completion(arguments, prompt, completion, *, cached=None):
