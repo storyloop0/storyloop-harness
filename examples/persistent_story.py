@@ -37,7 +37,7 @@ class HarborFixture:
                                usage=usage)
 
 
-def live_model():
+def live_model(*, generation_budget=None):
     required = ('STORY_MODEL_API_KEY', 'STORY_MODEL_NAME', 'STORY_MODEL_BASE_URL')
     values = {name: os.environ.get(name, '').strip() for name in required}
     missing = [name for name, value in values.items() if not value]
@@ -50,6 +50,7 @@ def live_model():
         credential=OpenAICredential(api_key=values['STORY_MODEL_API_KEY'],
                                     base_url=values['STORY_MODEL_BASE_URL']),
         stream=False, formatter=ThinkingSafeOpenAIChatFormatter(), task='scene_turn',
+        generation_budget=generation_budget,
     )
 
 
