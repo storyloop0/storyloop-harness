@@ -33,10 +33,11 @@ from storyloop_harness.agents.scene_schema import scene_output_schema
 from storyloop_harness.runtime.player_preferences import current_player_preferences
 from storyloop_harness.models.usage import capture_success_usage
 from storyloop_harness.core.generated_scene import (
-    GeneratedSceneRecovery, GeneratedSceneSnapshot, GeneratedSceneMismatch,
+    GeneratedSceneRecovery, GeneratedSceneSnapshot, GeneratedSceneRecoveryInspection,
+    GeneratedSceneMismatch,
     GeneratedSceneStale, GeneratedSceneCorrupt, GeneratedSceneWriteFailure,
     GeneratedSceneConflict,
-    content_hash, text_hash, package_fingerprint, logical_value,
+    content_hash, text_hash, package_fingerprint, snapshot_state_fingerprint, logical_value,
     validate_event_snapshot_reference,
 )
 
@@ -78,10 +79,10 @@ class SingleCallGameSession:
         self.generated_scene_recovery = generated_scene_recovery
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
-    def _bindings(self, before: Snapshot, player_text: str, max_tick: int | None) -> dict[str, object]:
+    def _bindings(self, before: Snapshot, input_hash: str, max_tick: int | None) -> dict[str, object]:
         projector = self.projector
-        return dict(input_hash=text_hash(player_text), base_version=before.version,
-            base_tick=before.tick, base_state_hash=content_hash(before.data),
+        return dict(input_hash=input_hash, base_version=before.version,
+            base_tick=before.tick, base_state_hash=snapshot_state_fingerprint(before),
             scenario_id=self.package.package_id, scenario_version=self.package.version,
             package_fingerprint=package_fingerprint(self.package),
             system_prompt_hash=text_hash(scene_system_prompt(self.package)),
@@ -97,9 +98,9 @@ class SingleCallGameSession:
                 generation_identity=self.generated_scene_recovery.generation_identity)))
 
     def _check_snapshot(self, record: GeneratedSceneSnapshot, before: Snapshot,
-                        player_text: str, max_tick: int | None, *, committed: bool = False) -> None:
+                        input_hash: str, max_tick: int | None, *, committed: bool = False) -> None:
         body = record.metadata()
-        expected = self._bindings(before, player_text, max_tick)
+        expected = self._bindings(before, input_hash, max_tick)
         for key, value in expected.items():
             if committed and key in ('base_version', 'base_tick', 'base_state_hash'):
                 continue
@@ -107,6 +108,41 @@ class SingleCallGameSession:
                 if key in ('base_version', 'base_tick', 'base_state_hash'):
                     raise GeneratedSceneStale('generated scene base state changed')
                 raise GeneratedSceneMismatch('generated scene binding changed')
+
+    def _saved_turn(self, game_id: str, turn_id: str):
+        event_id = f'{turn_id}:input'
+        for kind in ('input', 'query', 'action'):
+            candidate = f'{turn_id}:{kind}'
+            if self.store.event_exists(game_id, candidate):
+                event_id = candidate
+                break
+        return event_id, self.store.event_details(game_id, event_id)
+
+    def inspect_generated_scene_recovery(
+            self, before: Snapshot, turn_id: str, input_hash: str,
+            max_tick: int | None = None) -> GeneratedSceneRecoveryInspection | None:
+        if self.generated_scene_recovery is None:
+            raise ValueError('generated scene recovery is not configured')
+        record = self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(
+            before.game_id, turn_id)
+        event_id, saved = self._saved_turn(before.game_id, turn_id)
+        referenced = saved is not None and any(key in saved for key in (
+            'generated_scene_snapshot_id', 'generated_scene_snapshot_checksum'))
+        if record is None:
+            if referenced:
+                raise GeneratedSceneCorrupt('generated scene event reference missing snapshot')
+            return None
+        validated = GeneratedSceneSnapshot.from_storage(record.canonical_json, record.checksum)
+        if validated != record or record.game_id != before.game_id or record.turn_id != turn_id:
+            raise GeneratedSceneCorrupt('generated scene wrapper identity mismatch')
+        if saved is not None:
+            if not referenced:
+                raise GeneratedSceneCorrupt('generated scene event reference missing')
+            reference = WorldEvent(event_id, 'player_input', 'player', None,
+                                   before.tick, (), saved)
+            validate_event_snapshot_reference(reference, record)
+        self._check_snapshot(record, before, input_hash, max_tick, committed=saved is not None)
+        return GeneratedSceneRecoveryInspection(record, saved is not None)
 
     def _npc_reply(self, snapshot: Snapshot, work: PendingWork) -> WorkResult:
         actor_id = work.payload["actor_id"]
@@ -175,34 +211,18 @@ class SingleCallGameSession:
             self._reject_legacy_work(game_id)
             visible_before = {item.observation_id
                               for item in self.store.observations_for(game_id, "player")}
-            event_id = f"{turn_id}:input"
-            for kind in ("input", "query", "action"):
-                if self.store.event_exists(game_id, f"{turn_id}:{kind}"):
-                    event_id = f"{turn_id}:{kind}"
-                    break
-            saved = self.store.event_details(game_id, event_id)
+            _, saved = self._saved_turn(game_id, turn_id)
             before = self.store.load(game_id)
+            inspection = (self.inspect_generated_scene_recovery(
+                before, turn_id, text_hash(player_text), max_tick)
+                if self.generated_scene_recovery is not None else None)
             if saved is not None:
                 if saved.get("text") != player_text or not isinstance(saved.get("single_call"), dict):
                     raise ValueError("turn ID already belongs to another action")
-                if self.generated_scene_recovery is not None:
-                    record = self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
-                    if record is not None and not any(key in saved for key in (
-                            'generated_scene_snapshot_id', 'generated_scene_snapshot_checksum')):
-                        raise GeneratedSceneCorrupt('generated scene event reference missing')
-                    if any(key in saved for key in ('generated_scene_snapshot_id',
-                                                   'generated_scene_snapshot_checksum')):
-                        from storyloop_harness.core.contracts import WorldEvent
-                        reference = WorldEvent(event_id, 'player_input', 'player', None,
-                                               before.tick, (), saved)
-                        validate_event_snapshot_reference(reference, record)
-                        self._check_snapshot(record, before, player_text, max_tick, committed=True)
                 plan = SceneTurn.model_validate(saved["single_call"])
             else:
-                record = (self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
-                          if self.generated_scene_recovery is not None else None)
+                record = inspection.snapshot if inspection is not None else None
                 if record is not None:
-                    self._check_snapshot(record, before, player_text, max_tick)
                     plan = record.scene()
                     await emit(progress, 'stage', stage='committing')
                     before = self._commit_player(before, turn_id, player_text, plan, max_tick, record)
@@ -233,7 +253,7 @@ class SingleCallGameSession:
                     if self.generated_scene_recovery is not None:
                         record = GeneratedSceneSnapshot.create(
                             game_id=game_id, turn_id=turn_id,
-                            **self._bindings(before, player_text, max_tick),
+                            **self._bindings(before, text_hash(player_text), max_tick),
                             projected_request_hash=content_hash(context.request),
                             focus_actor_ids=context.focus_actor_ids,
                             nearby_actor_ids=context.nearby_actor_ids,
