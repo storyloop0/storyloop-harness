@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import zipfile
 
 from storyloop_harness.demo import main
+from storyloop_harness.storage import SQLiteGameStore
 
 
 def _run(*args, cwd: Path):
@@ -24,14 +25,31 @@ def _event_count(db: Path) -> int:
         return connection.execute('SELECT count(*) FROM events').fetchone()[0]
 
 
+def _result_line(output: str, label: str) -> str:
+    return next(line.removeprefix(label) for line in output.splitlines()
+                if line.startswith(label))
+
+
+def _narration(output: str) -> str:
+    lines = output.splitlines()
+    version_line = next(index for index, line in enumerate(lines)
+                        if line.startswith('Snapshot version: '))
+    return '\n'.join(lines[2:version_line])
+
+
+def _saved_snapshot(db: Path):
+    with SQLiteGameStore(db) as store:
+        return store.load('installed-harbor-demo')
+
+
 def test_default_uses_temporary_storage_and_bundled_resources(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert main([]) == 0
     output = capsys.readouterr().out
     assert 'deterministic' in output.lower()
     assert 'Storage: temporary' in output
-    assert 'Snapshot version:' in output
-    assert 'New events:' in output
+    assert int(_result_line(output, 'Snapshot version: ')) > 0
+    assert int(_result_line(output, 'New events: ')) > 0
     assert 'Fixture model invocations: 1' in output
     assert 'Provider requests: 0' in output
     assert 'Unchanged replay: no' in output
@@ -45,6 +63,10 @@ def test_persistent_replay_and_changed_input_are_process_safe(tmp_path):
     assert first.returncode == 0, first.stderr
     assert f'Storage: {db.resolve()}' in first.stdout
     assert 'Fixture model invocations: 1' in first.stdout
+    first_narration = _narration(first.stdout)
+    first_version = int(_result_line(first.stdout, 'Snapshot version: '))
+    first_snapshot = _saved_snapshot(db)
+    assert first_version == first_snapshot.version
     count = _event_count(db)
     replay = _run('--db', db, cwd=tmp_path)
     assert replay.returncode == 0, replay.stderr
@@ -52,10 +74,14 @@ def test_persistent_replay_and_changed_input_are_process_safe(tmp_path):
     assert 'Fixture model invocations: 0' in replay.stdout
     assert 'Provider requests: 0' in replay.stdout
     assert 'Unchanged replay: yes' in replay.stdout
+    assert _narration(replay.stdout) == first_narration
+    assert int(_result_line(replay.stdout, 'Snapshot version: ')) == first_version
+    assert _saved_snapshot(db) == first_snapshot
     assert _event_count(db) == count
     changed = _run('--db', db, '--text', 'Different', cwd=tmp_path)
     assert changed.returncode != 0
     assert changed.stderr.startswith('Demo error:')
+    assert _saved_snapshot(db) == first_snapshot
     assert _event_count(db) == count
     further = _run('--db', db, '--turn-id', 'demo-2', cwd=tmp_path)
     assert further.returncode == 0, further.stderr
