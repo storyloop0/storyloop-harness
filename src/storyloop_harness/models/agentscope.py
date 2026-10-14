@@ -13,6 +13,7 @@ from storyloop_harness.models.request_guard import GuardedCompletions
 from storyloop_harness.models.attempt_tracking import AttemptTracker
 from storyloop_harness.models.generation_budget import GenerationBudget, GenerationTimeout
 from storyloop_harness.models.generation_control import controlled_generation, current_control, suspend_control
+from storyloop_harness.models.execution_control import current_execution_control, check_deadlines
 
 ToolChoicePolicy = Literal["native", "auto_only"]
 StructuredOutputTransport = Literal["auto", "tool_call"]
@@ -38,10 +39,8 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
         self._generation_control_key = object()
         # The copied public SDK client owns no distinct transport. Keep it for
         # this model's lifetime; only the original client owns close().
-        self._controlled_client = (self.client.with_options(max_retries=0)
-                                   if generation_budget is not None else None)
-        controlled_resource = (self._controlled_client.chat.completions
-                               if self._controlled_client is not None else None)
+        self._controlled_client = self.client.with_options(max_retries=0)
+        controlled_resource = self._controlled_client.chat.completions
         self.client.chat.completions = GuardedCompletions(
             self.client.chat.completions, controlled_resource, self._generation_control_key,
         )
@@ -105,12 +104,17 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
                 response = await super()._call_api_with_structured_output(*args, **kwargs)
             except asyncio.CancelledError:
                 control = current_control(self._generation_control_key)
+                execution = current_execution_control()
+                if execution is not None and execution.owns_cancellation() and (
+                    control is None or execution.deadline <= control.deadline
+                ):
+                    from storyloop_harness.models.execution_budget import ExecutionTimeout
+                    raise ExecutionTimeout() from None
                 if control is not None and control.owns_cancellation():
                     raise GenerationTimeout() from None
                 raise
             control = current_control(self._generation_control_key)
-            if control is not None:
-                control.check_deadline()
+            check_deadlines(current_execution_control(), control)
             return response
 
     async def generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
@@ -174,6 +178,7 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
                         **kwargs,
                     )
                 self._record_usage(response)
+                check_deadlines(current_execution_control(), None)
             except Exception as error:
                 generation.update(level="ERROR", status_message=type(error).__name__)
                 raise

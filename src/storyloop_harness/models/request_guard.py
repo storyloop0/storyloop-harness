@@ -11,6 +11,7 @@ from openai import Omit, NOT_GIVEN
 from storyloop_harness.context import ContextBudget
 from storyloop_harness.context.budget import estimate_request_envelope, enforce_window
 from storyloop_harness.models.generation_control import current_control
+from storyloop_harness.models.execution_control import current_execution_control, admit_send
 
 
 _TRANSPORT_FIELDS = frozenset({"timeout", "extra_headers", "extra_query"})
@@ -42,8 +43,9 @@ class GuardedCompletions:
 
     async def create(self, **kwargs: Any) -> Any:
         budget = self._budget.get()
+        execution = current_execution_control()
         control = current_control(self._control_owner)
-        if budget is None and control is None:
+        if budget is None and control is None and execution is None:
             return await self._resource.create(**kwargs)
 
         # Transport arguments are not JSON body fields and can hold SDK
@@ -71,7 +73,7 @@ class GuardedCompletions:
             tools = body.pop("tools", None)
             report = estimate_request_envelope(messages, tools, budget, envelope_options=body)
             enforce_window(report)
-        if control is not None:
-            control.claim_send()
+        if control is not None or execution is not None:
+            admit_send(execution, control)
             return await self._controlled_resource.create(**snapshot)
         return await self._resource.create(**snapshot)

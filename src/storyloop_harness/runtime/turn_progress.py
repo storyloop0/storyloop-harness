@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+from storyloop_harness.models.execution_budget import ExecutionRequestLimitExceeded, ExecutionTimeout
 
 
 TurnProgress = Callable[[dict[str, Any]], Awaitable[None]]
@@ -15,5 +16,7 @@ async def emit(progress: TurnProgress | None, event_type: str, **payload: Any) -
     if progress is not None:
         try:
             await progress({"type": event_type, **payload})
+        except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+            raise
         except Exception:
             logger.warning("turn progress delivery failed", exc_info=True)

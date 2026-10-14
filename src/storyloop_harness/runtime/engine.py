@@ -16,6 +16,7 @@ from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.context.checkpoints import CheckpointLifecycle, CheckpointSummarizer
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
+from storyloop_harness.models.execution_budget import ExecutionRequestLimitExceeded, ExecutionTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,8 @@ class TurnEngine:
                     for actor_id in ('player', *(actor for actor, _ in self.package.actor_cards)):
                         try:
                             await self.checkpoints.refresh(turn.game_id, actor_id)
+                        except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+                            raise
                         except Exception as exc:
                             logger.warning('checkpoint refresh failed (%s)', type(exc).__name__)
             return replace(result, events=tuple(events), model_usage=tuple(usage.records))
