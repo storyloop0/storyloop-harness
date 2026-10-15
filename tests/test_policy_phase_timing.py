@@ -210,6 +210,55 @@ def test_original_model_error_survives_all_cleanup_errors(monkeypatch, kind):
     assert 'SENTINEL' not in json.dumps(row)
 
 
+@pytest.mark.parametrize('kind', [ValueError, asyncio.CancelledError])
+def test_original_model_error_survives_client_lookup_error(kind):
+    original = kind('MODEL_SENTINEL')
+    lookup_error = RuntimeError('CLIENT_LOOKUP_SENTINEL')
+    captured = []
+    lookups = []
+
+    class Model(Fixture):
+        @property
+        def client(self):
+            lookups.append('client')
+            raise lookup_error
+
+        async def __call__(self, messages, **kwargs):
+            raise original
+
+    with pytest.raises(kind) as caught:
+        _run(model_mode='sdk_mock', model_factory=Model, evidence_sink=captured.append)
+    assert caught.value is original
+    assert lookups == ['client']
+    assert len(captured) == 1
+    assert captured[0]['error'] == {'type': kind.__name__}
+    assert 'SENTINEL' not in json.dumps(captured[0])
+
+
+def test_client_lookup_error_after_success_emits_failed_row():
+    lookup_error = RuntimeError('CLIENT_LOOKUP_SENTINEL')
+    captured = []
+    lookups = []
+
+    class Model(Fixture):
+        @property
+        def client(self):
+            lookups.append('client')
+            raise lookup_error
+
+    with pytest.raises(RuntimeError) as caught:
+        _run(model_mode='sdk_mock', model_factory=Model, evidence_sink=captured.append)
+    assert caught.value is lookup_error
+    assert lookups == ['client']
+    assert len(captured) == 1
+    row = captured[0]
+    assert row['passed'] is False
+    assert row['error'] == {'type': 'RuntimeError'}
+    assert tuple(row['timing_status'][p] for p in PHASES) == (
+        'completed', 'completed', 'completed', 'completed', 'not_started')
+    assert 'CLIENT_LOOKUP_SENTINEL' not in json.dumps(row)
+
+
 @pytest.mark.parametrize('where', ['summary', 'deepcopy', 'sqlite', 'temporary', 'client'])
 def test_late_failure_keeps_completed_phase_evidence(monkeypatch, where):
     captured = []

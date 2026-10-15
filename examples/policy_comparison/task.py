@@ -272,13 +272,13 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                     if cleanup_error is None:
                         cleanup_error = error
             if delegate is not None and model_mode != 'fixture':
-                client = getattr(delegate, 'client', None)
-                if client is not None:
-                    try:
+                try:
+                    client = getattr(delegate, 'client', None)
+                    if client is not None:
                         await client.close()
-                    except BaseException as error:
-                        if cleanup_error is None:
-                            cleanup_error = error
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
             if active_error is None and cleanup_error is not None:
                 raise cleanup_error
     except BaseException as error:
