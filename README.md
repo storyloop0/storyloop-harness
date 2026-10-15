@@ -171,9 +171,13 @@ async with execution_budget_scope(ExecutionBudget(max_reported_tokens=12_000)):
 
 ### 可选的生成结果恢复
 
-独立应用可从 `storyloop_harness.advanced` 导入 `GeneratedSceneRecovery`，给 `TurnEngine` 传入 `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")`。身份字符串应代表非敏感模型配置，store 须实现单独的快照存储接口。验证后的场景在第一次世界提交前持久保存；相同输入、剧本内容、生成配置和基础状态可在重启后复用，跳过投影和模型。事件已提交时沿用持久待办恢复。历史成功用量通过 `engine.generated_scene_snapshot(...).success_usage()` 单独读取，不进入本次 `model_usage` 或尝试记录。保存前崩溃仍可能重复调用供应商；这不提供整回合原子性、计费恢复或多 worker 所有权。默认关闭。
+独立应用可从 `storyloop_harness.advanced` 导入 `GeneratedSceneRecovery`，给 `TurnEngine` 传入 `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")`。身份字符串应代表非敏感模型配置，store 须实现单独的快照存储接口。验证后的场景在第一次世界提交前持久保存；相同输入、剧本内容、生成配置和基础状态可在重启后复用，跳过投影和模型。事件已提交时沿用持久待办恢复。历史成功用量通过 `engine.generated_scene_snapshot(...).success_usage()` 单独读取，不进入本次 `model_usage` 或尝试记录。未开启下方保护时，保存前崩溃仍可能重复调用供应商；这不提供整回合原子性、计费恢复或多 worker 所有权。恢复默认关闭。
 
-`engine.inspect_generated_scene_recovery(turn)` 只读检查快照，返回公开的不可变 `GeneratedSceneRecoveryInspection(snapshot, committed)`，缺少快照时返回 `None`。仅持有输入 SHA-256 的服务可使用 `inspect_generated_scene_recovery_fingerprint(game_id, turn_id, input_hash, scenario_version)`；两者与执行共用绑定和事件引用验证，不投影、调用模型或写入。`advanced.snapshot_state_fingerprint(snapshot)` 提供相同的世界数据指纹，供外部恢复凭据绑定基础状态。
+`engine.inspect_generated_scene_recovery(turn)` 只读检查快照，返回公开的不可变 `GeneratedSceneRecoveryInspection(snapshot, committed)`；缺少快照且未发现下述不确定生成时返回 `None`。仅持有输入 SHA-256 的服务可使用 `inspect_generated_scene_recovery_fingerprint(game_id, turn_id, input_hash, scenario_version)`；两者与执行共用绑定和事件引用验证，不投影、调用模型或写入。`advanced.snapshot_state_fingerprint(snapshot)` 提供相同的世界数据指纹，供外部恢复凭据绑定基础状态。
+
+可选 `GeneratedSceneRecovery(store, "model-config:v1", protect_uncertain_generation=True)` 在投影成功后、普通场景生成前原子保存不可变标记。同一 store 还须实现独立的 `advanced.GeneratedSceneGenerationMarkerStore`，SQLiteGameStore 与 InMemoryGameStore 已支持。若同一回合有标记但无合法快照或已提交结果，执行及上述只读检查均抛 `advanced.GeneratedSceneUncertain`（`Generated scene outcome is uncertain`）；合法结果仍零模型调用恢复。
+
+保护默认关闭。标记后的错误或取消可能阻塞该回合，即使请求尚未到达供应商，也需应用或人工判断；标记不会自动清除或过期。它保护一次普通场景生成及其既有内部重试，不证明供应商接受或收费，也不提供逐次发送账本、全局去重或 worker 所有权。
 
 ## 检查上下文与配置预算
 
