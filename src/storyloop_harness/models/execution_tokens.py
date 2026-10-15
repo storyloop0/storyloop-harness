@@ -8,6 +8,7 @@ from .usage import ModelUsage
 class ReportedTokenLedger:
     known_tokens: int = 0
     complete: bool = True
+    pending_attempts: int = 0
 
 
 @dataclass
@@ -16,11 +17,15 @@ class AttemptTokenUsage:
     sends: int = 0
     last_valid_usage: ModelUsage | None = None
     settled: bool = False
+    pending: bool = False
 
     def settle(self, *, complete: bool) -> None:
         if self.settled:
             return
         self.settled = True
+        if self.pending:
+            self.ledger.pending_attempts -= 1
+            self.pending = False
         if self.sends == 0:
             return
         if self.last_valid_usage is not None:

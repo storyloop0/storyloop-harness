@@ -73,8 +73,10 @@ def admit_send(execution: ExecutionControl | None,
     if generation is not None and generation.sends >= generation.budget.max_requests:
         raise GenerationRequestLimitExceeded()
     if execution is not None and execution.budget.max_reported_tokens is not None:
+        # A pending send belongs only to its own receipt; another attempt cannot borrow it.
         if (attempt is None or attempt.ledger is not execution.token_usage
-                or attempt.settled or not execution.token_usage.complete):
+                or attempt.settled or not execution.token_usage.complete
+                or execution.token_usage.pending_attempts != int(attempt.pending)):
             raise ExecutionUsageUnavailable()
         if execution.token_usage.known_tokens >= execution.budget.max_reported_tokens:
             raise ExecutionTokenLimitExceeded()
@@ -84,6 +86,9 @@ def admit_send(execution: ExecutionControl | None,
         generation.sends += 1
     if (execution is not None and attempt is not None
             and attempt.ledger is execution.token_usage and not attempt.settled):
+        if execution.budget.max_reported_tokens is not None and not attempt.pending:
+            attempt.pending = True
+            execution.token_usage.pending_attempts += 1
         attempt.sends += 1
 
 

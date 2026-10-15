@@ -246,6 +246,64 @@ def test_two_real_guarded_sends_in_one_attempt_mark_coverage_incomplete():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('limit', [10, 11, None])
+def test_reentrant_other_model_waits_for_outer_attempt_settlement(limit):
+    async def run():
+        posts = []
+        async def transport(request):
+            posts.append(request)
+            if len(posts) == 1:
+                if limit is None:
+                    nested = await second.generate_structured_output(
+                        [{'role': 'user', 'content': 'nested'}], Reply,
+                        tool_choice=ToolChoice(mode='auto'))
+                    assert nested.content == {'prose': 'ok'}
+                    assert len(posts) == control.sends == 2
+                else:
+                    with pytest.raises(ExecutionUsageUnavailable):
+                        await second.generate_structured_output(
+                            [{'role': 'user', 'content': 'nested'}], Reply,
+                            tool_choice=ToolChoice(mode='auto'))
+                    assert len(posts) == control.sends == 1
+                    assert control.token_usage.known_tokens == 0
+                    assert control.token_usage.complete
+            payload = completion()
+            payload['usage'] = {'prompt_tokens': 8, 'completion_tokens': 2, 'total_tokens': 10}
+            return httpx2.Response(200, json=payload)
+
+        client = httpx2.AsyncClient(transport=httpx2.MockTransport(transport))
+        first = create_test_model(http_client=client, task='first', sdk_retries=0)
+        second = create_test_model(http_client=client, task='second', sdk_retries=0)
+        first.max_retries = second.max_retries = 0
+        try:
+            async with execution_budget_scope(ExecutionBudget(6, 30, limit)) as control:
+                result = await first.generate_structured_output(
+                    [{'role': 'user', 'content': 'outer'}], Reply,
+                    tool_choice=ToolChoice(mode='auto'))
+                assert result.content == {'prose': 'ok'}
+                assert len(posts) == control.sends == (2 if limit is None else 1)
+                if limit is not None:
+                    assert control.token_usage.known_tokens == 10
+                    assert control.token_usage.complete
+                if limit == 10:
+                    with pytest.raises(ExecutionTokenLimitExceeded):
+                        await second.generate_structured_output(
+                            [{'role': 'user', 'content': 'after'}], Reply,
+                            tool_choice=ToolChoice(mode='auto'))
+                    assert len(posts) == control.sends == 1
+                else:
+                    await second.generate_structured_output(
+                        [{'role': 'user', 'content': 'after'}], Reply,
+                        tool_choice=ToolChoice(mode='auto'))
+                    assert len(posts) == control.sends == (3 if limit is None else 2)
+        finally:
+            await first.client.close()
+            await second.client.close()
+            await client.aclose()
+
+    asyncio.run(run())
+
+
 def test_local_rejections_leave_token_ledger_available():
     async def run():
         sent = []
