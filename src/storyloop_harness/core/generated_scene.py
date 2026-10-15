@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+from storyloop_harness.core.contracts import Snapshot
 
 from storyloop_harness.agents.scene_schema import SceneTurn
 from storyloop_harness.models.usage import ModelUsage
@@ -53,6 +54,11 @@ def content_hash(value: object) -> str:
     return sha256(canonical_json(value).encode('utf-8')).hexdigest()
 
 
+def snapshot_state_fingerprint(snapshot: Snapshot) -> str:
+    """Fingerprint the persisted world data, excluding version and clock bindings."""
+    return content_hash(snapshot.data)
+
+
 def text_hash(value: str) -> str:
     return sha256(value.encode('utf-8')).hexdigest()
 
@@ -91,6 +97,12 @@ class GeneratedSceneRecovery:
     def __post_init__(self) -> None:
         if not isinstance(self.generation_identity, str) or not self.generation_identity.strip():
             raise ValueError('generated scene recovery requires nonempty generation identity')
+
+
+@dataclass(frozen=True)
+class GeneratedSceneRecoveryInspection:
+    snapshot: GeneratedSceneSnapshot
+    committed: bool
 
 
 @dataclass(frozen=True)

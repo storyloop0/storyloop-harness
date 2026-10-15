@@ -162,6 +162,8 @@ print(summary.usage_complete)
 
 独立应用可从 `storyloop_harness.advanced` 导入 `GeneratedSceneRecovery`，给 `TurnEngine` 传入 `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")`。身份字符串应代表非敏感模型配置，store 须实现单独的快照存储接口。验证后的场景在第一次世界提交前持久保存；相同输入、剧本内容、生成配置和基础状态可在重启后复用，跳过投影和模型。事件已提交时沿用持久待办恢复。历史成功用量通过 `engine.generated_scene_snapshot(...).success_usage()` 单独读取，不进入本次 `model_usage` 或尝试记录。保存前崩溃仍可能重复调用供应商；这不提供整回合原子性、计费恢复或多 worker 所有权。默认关闭。
 
+`engine.inspect_generated_scene_recovery(turn)` 只读检查快照，返回公开的不可变 `GeneratedSceneRecoveryInspection(snapshot, committed)`，缺少快照时返回 `None`。仅持有输入 SHA-256 的服务可使用 `inspect_generated_scene_recovery_fingerprint(game_id, turn_id, input_hash, scenario_version)`；两者与执行共用绑定和事件引用验证，不投影、调用模型或写入。`advanced.snapshot_state_fingerprint(snapshot)` 提供相同的世界数据指纹，供外部恢复凭据绑定基础状态。
+
 ## 检查上下文与配置预算
 
 在仓库根目录运行：

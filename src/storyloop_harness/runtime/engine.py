@@ -1,5 +1,6 @@
 """Default single-call engine facade."""
 from contextvars import ContextVar
+import re
 import logging
 from storyloop_harness.context import ContextBudget, ContextProjection, ContextPolicy
 from dataclasses import replace
@@ -17,7 +18,9 @@ from storyloop_harness.context.checkpoints import CheckpointLifecycle, Checkpoin
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
 from storyloop_harness.models.execution_budget import ExecutionRequestLimitExceeded, ExecutionTimeout
-from storyloop_harness.core.generated_scene import GeneratedSceneRecovery
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneRecovery, GeneratedSceneRecoveryInspection, text_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,24 @@ class TurnEngine:
         if self.generated_scene_recovery is None:
             raise ValueError('generated scene recovery is not configured')
         return self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
+
+    def inspect_generated_scene_recovery(
+            self, turn: TurnInput, *, max_tick: int | None = None,
+            ) -> GeneratedSceneRecoveryInspection | None:
+        return self.inspect_generated_scene_recovery_fingerprint(
+            turn.game_id, turn.turn_id, text_hash(turn.player_text), turn.scenario_version,
+            max_tick=max_tick)
+
+    def inspect_generated_scene_recovery_fingerprint(
+            self, game_id: str, turn_id: str, input_hash: str, scenario_version: str,
+            *, max_tick: int | None = None) -> GeneratedSceneRecoveryInspection | None:
+        if self.generated_scene_recovery is None:
+            raise ValueError('generated scene recovery is not configured')
+        if not isinstance(input_hash, str) or re.fullmatch(r'[0-9a-f]{64}', input_hash) is None:
+            raise ValueError('invalid input fingerprint')
+        before = self._snapshot_for(TurnInput(game_id, '', turn_id, scenario_version))
+        return self.session.inspect_generated_scene_recovery(
+            before, turn_id, input_hash, max_tick)
 
     def _snapshot_for(self, turn: TurnInput):
         if turn.scenario_version != self.package.version:
