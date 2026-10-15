@@ -140,6 +140,14 @@ def test_documented_adapter_surfaces_export_story_types_without_product_types():
     assert usage.ModelUsage('offline', 'turn', 0, 0).input_tokens == 0
 
 
+def test_generation_exports_reported_token_errors():
+    from storyloop_harness import generation
+
+    for name in ('ExecutionTokenLimitExceeded', 'ExecutionUsageUnavailable'):
+        assert name in generation.__all__
+        assert issubclass(getattr(generation, name), RuntimeError)
+
+
 def test_generated_scene_persistence_contract_is_public():
     from storyloop_harness import advanced
 
