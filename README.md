@@ -156,7 +156,18 @@ print(summary.usage_complete)
 
 ### 跨生成的执行预算
 
-从 `storyloop_harness.generation` 导入 `ExecutionBudget` 与 `execution_budget_scope`，用 `async with execution_budget_scope(ExecutionBudget(6, 180)):` 包住同一任务的执行。该可选作用域共享兼容适配器实际补全发送次数和单调时钟期限，包括普通调用；各次 `GenerationBudget(3, 90)` 仍独立生效。受控请求关闭 SDK 额外重试，子任务继承作用域后拒绝发送。同步阻塞无法被准时打断；这不是 Token 或费用上限，未设置作用域的 Harness 调用保持原策略。
+从 `storyloop_harness.generation` 导入 `ExecutionBudget` 与 `execution_budget_scope`，用 `async with execution_budget_scope(ExecutionBudget(6, 180)):` 包住同一任务的执行。该可选作用域共享兼容适配器实际补全发送次数和单调时钟期限，默认也包括普通调用；各次 `GenerationBudget(3, 90)` 仍独立生效。受控请求关闭 SDK 额外重试，子任务继承作用域后拒绝发送。同步阻塞无法被准时打断；未设置作用域的 Harness 调用保持原策略。
+
+可选的 `max_reported_tokens` 默认关闭，在同一执行的结构化生成、模型、重试和回退间累计已报告的输入与输出 Token（含失败尝试，缓存输入不重复加总）：
+
+```python
+from storyloop_harness.generation import ExecutionBudget, execution_budget_scope
+
+async with execution_budget_scope(ExecutionBudget(max_reported_tokens=12_000)):
+    response = await model.generate_structured_output(messages, Reply)
+```
+
+达到阈值后，下一次发送抛 `ExecutionTokenLimitExceeded`；用量缺失、非法或覆盖不完整时，下一次发送抛 `ExecutionUsageUnavailable`。无需开启尝试收集器。开启后仅支持结构化生成及 `__call__(structured_model=...)`，普通和直接 guarded 发送会被拒绝。最后一次已发请求仍可能超过阈值并返回有效结果；它不提供供应商 Token 或费用硬上限，也不改变成功用量收集与扣费规则。
 
 ### 可选的生成结果恢复
 

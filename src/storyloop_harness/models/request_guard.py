@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from typing import Any, Iterator
+from typing import Any, Iterator, TYPE_CHECKING
 
 from openai import Omit, NOT_GIVEN
 
@@ -12,6 +12,9 @@ from storyloop_harness.context import ContextBudget
 from storyloop_harness.context.budget import estimate_request_envelope, enforce_window
 from storyloop_harness.models.generation_control import current_control
 from storyloop_harness.models.execution_control import current_execution_control, admit_send
+
+if TYPE_CHECKING:
+    from storyloop_harness.models.attempt_tracking import AttemptTracker
 
 
 _TRANSPORT_FIELDS = frozenset({"timeout", "extra_headers", "extra_query"})
@@ -22,10 +25,12 @@ class GuardedCompletions:
     """Check a detached body snapshot, then send that same snapshot."""
 
     def __init__(self, resource: Any, controlled_resource: Any = None,
-                 control_owner: object = None) -> None:
+                 control_owner: object = None,
+                 attempt_tracker: AttemptTracker | None = None) -> None:
         self._resource = resource
         self._controlled_resource = controlled_resource
         self._control_owner = control_owner
+        self._attempt_tracker = attempt_tracker
         self._budget: ContextVar[ContextBudget | None] = ContextVar(
             "storyloop_request_budget", default=None,
         )
@@ -74,6 +79,8 @@ class GuardedCompletions:
             report = estimate_request_envelope(messages, tools, budget, envelope_options=body)
             enforce_window(report)
         if control is not None or execution is not None:
-            admit_send(execution, control)
+            attempt = (self._attempt_tracker.current_token_attempt()
+                       if self._attempt_tracker is not None else None)
+            admit_send(execution, control, attempt)
             return await self._controlled_resource.create(**snapshot)
         return await self._resource.create(**snapshot)

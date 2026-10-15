@@ -159,7 +159,18 @@ This records logical attempts for `CompatibleOpenAIChatModel` structured output 
 
 ### Execution budgets across generations
 
-Import `ExecutionBudget` and `execution_budget_scope` from `storyloop_harness.generation`, then wrap same-task execution with `async with execution_budget_scope(ExecutionBudget(6, 180)):`. This optional scope shares actual compatible-adapter completion sends and a monotonic deadline, including ordinary calls; each `GenerationBudget(3, 90)` still applies independently. Controlled requests disable extra SDK retries, and child tasks inheriting a scope cannot send. Synchronous blocking cannot be interrupted precisely. This is not a token or money cap; unscoped Harness calls retain their policy.
+Import `ExecutionBudget` and `execution_budget_scope` from `storyloop_harness.generation`, then wrap same-task execution with `async with execution_budget_scope(ExecutionBudget(6, 180)):`. This optional scope shares actual compatible-adapter completion sends and a monotonic deadline, including ordinary calls by default; each `GenerationBudget(3, 90)` still applies independently. Controlled requests disable extra SDK retries, and child tasks inheriting a scope cannot send. Synchronous blocking cannot be interrupted precisely. Unscoped Harness calls retain their policy.
+
+Optional `max_reported_tokens` is disabled by default. It sums reported input and output tokens across structured generations, models, retries and fallbacks in one execution, including failed attempts. Cached input is already included:
+
+```python
+from storyloop_harness.generation import ExecutionBudget, execution_budget_scope
+
+async with execution_budget_scope(ExecutionBudget(max_reported_tokens=12_000)):
+    response = await model.generate_structured_output(messages, Reply)
+```
+
+At the threshold, the next send raises `ExecutionTokenLimitExceeded`. With missing, invalid or incomplete usage, the next send raises `ExecutionUsageUnavailable`. No attempt collector is required. Token mode supports structured generation and `__call__(structured_model=...)`; ordinary and direct guarded sends are rejected. A request already sent can exceed the threshold and still return a valid result. This does not guarantee a provider token or cost cap, or change successful usage collection and billing.
 
 ### Optional generated-scene recovery
 

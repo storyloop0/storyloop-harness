@@ -5,11 +5,16 @@ import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator, Iterator, TYPE_CHECKING
 from uuid import uuid4
 
 from storyloop_harness.models.attempts import ModelAttempt, _active_attempts, AttemptCollector
 from storyloop_harness.models.usage import ModelUsage, model_usage_from_response
+from storyloop_harness.models.execution_control import current_execution_control
+from storyloop_harness.models.execution_tokens import AttemptTokenUsage
+
+if TYPE_CHECKING:
+    from storyloop_harness.models.execution_control import ExecutionControl
 
 
 @dataclass
@@ -17,6 +22,8 @@ class _Invocation:
     identifier: str
     collector: AttemptCollector | None
     ordinal: int = 0
+    execution: ExecutionControl | None = None
+    owner: asyncio.Task[object] | None = None
 
 
 @dataclass
@@ -27,6 +34,7 @@ class _Attempt:
     usage_state: str = "missing"
     stream_complete: bool = False
     streams: list[tuple[object, object]] = field(default_factory=list)
+    token_usage: AttemptTokenUsage | None = None
 
 
 class AttemptTracker:
@@ -43,10 +51,15 @@ class AttemptTracker:
     @contextmanager
     def invocation(self) -> Iterator[None]:
         collector = _active_attempts.get()
-        if collector is None:
+        execution = current_execution_control()
+        enabled = execution is not None and execution.budget.max_reported_tokens is not None
+        if collector is None and not enabled:
             yield
             return
-        token = self._invocation.set(_Invocation(str(uuid4()), collector))
+        token = self._invocation.set(_Invocation(
+            str(uuid4()), collector, execution=execution if enabled else None,
+            owner=asyncio.current_task(),
+        ))
         try:
             yield
         finally:
@@ -60,6 +73,8 @@ class AttemptTracker:
             return
         invocation.ordinal += 1
         current = _Attempt(invocation, invocation.ordinal)
+        if invocation.execution is not None and invocation.owner is asyncio.current_task():
+            current.token_usage = AttemptTokenUsage(invocation.execution.token_usage)
         token = self._attempt.set(current)
         primary: BaseException | None = None
         try:
@@ -84,6 +99,10 @@ class AttemptTracker:
                     raise cleanup_failure
             finally:
                 self._attempt.reset(token)
+                if current.token_usage is not None:
+                    current.token_usage.settle(complete=(
+                        current.usage_state == 'reported' and current.stream_complete
+                    ))
                 if invocation.collector is not None:
                     outcome = ("cancelled" if isinstance(primary, asyncio.CancelledError)
                                else "failed" if primary is not None else "succeeded")
@@ -104,6 +123,26 @@ class AttemptTracker:
             current.usage_state = "invalid"
         else:
             current.usage_state = "reported"
+            if current.token_usage is not None:
+                current.token_usage.last_valid_usage = current.usage
+
+    def current_token_attempt(self) -> AttemptTokenUsage | None:
+        current = self._attempt.get()
+        if current is None or current.invocation.owner is not asyncio.current_task():
+            return None
+        return current.token_usage
+
+    @contextmanager
+    def suspend_token_attempt(self) -> Iterator[None]:
+        current = self._attempt.get()
+        if current is None or current.token_usage is None:
+            yield
+            return
+        token = self._attempt.set(None)
+        try:
+            yield
+        finally:
+            self._attempt.reset(token)
 
     def observe(self, response: object) -> object:
         current = self._attempt.get()

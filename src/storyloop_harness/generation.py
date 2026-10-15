@@ -21,7 +21,8 @@ from storyloop_harness.models.generation_budget import (
 )
 from storyloop_harness.models.execution_budget import (
     ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout,
+    ExecutionTokenLimitExceeded, ExecutionUsageUnavailable,
 )
 from storyloop_harness.models.execution_control import execution_budget_scope
 
-__all__ = ['ActionOption', 'ActionOptionAdvisor', 'CompatibleOpenAIChatModel', 'GenerationBudget', 'GenerationRequestLimitExceeded', 'GenerationTimeout', 'ExecutionBudget', 'ExecutionRequestLimitExceeded', 'ExecutionTimeout', 'execution_budget_scope', 'Msg', 'StructuredOutputTransport', 'ThinkingSafeOpenAIChatFormatter', 'ToolChoicePolicy']
+__all__ = ['ActionOption', 'ActionOptionAdvisor', 'CompatibleOpenAIChatModel', 'GenerationBudget', 'GenerationRequestLimitExceeded', 'GenerationTimeout', 'ExecutionBudget', 'ExecutionRequestLimitExceeded', 'ExecutionTimeout', 'ExecutionTokenLimitExceeded', 'ExecutionUsageUnavailable', 'execution_budget_scope', 'Msg', 'StructuredOutputTransport', 'ThinkingSafeOpenAIChatFormatter', 'ToolChoicePolicy']

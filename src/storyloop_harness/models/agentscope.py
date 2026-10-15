@@ -43,6 +43,7 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
         controlled_resource = self._controlled_client.chat.completions
         self.client.chat.completions = GuardedCompletions(
             self.client.chat.completions, controlled_resource, self._generation_control_key,
+            attempt_tracker=self._attempt_tracker,
         )
 
     @property
@@ -172,7 +173,8 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             input=messages if self.telemetry.capture_content else None,
         ) as generation:
             try:
-                with suspend_control(self._generation_control_key):
+                with (suspend_control(self._generation_control_key),
+                      self._attempt_tracker.suspend_token_attempt()):
                     response = await super().__call__(
                         messages, tools=tools, tool_choice=tool_choice,
                         **kwargs,

@@ -4,11 +4,15 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 from typing import AsyncIterator
 
-from .execution_budget import ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout
+from .execution_budget import (
+    ExecutionBudget, ExecutionRequestLimitExceeded, ExecutionTimeout,
+    ExecutionTokenLimitExceeded, ExecutionUsageUnavailable,
+)
+from .execution_tokens import AttemptTokenUsage, ReportedTokenLedger
 from .generation_budget import GenerationRequestLimitExceeded, GenerationTimeout
 from .generation_control import GenerationControl
 
@@ -22,6 +26,7 @@ class ExecutionControl:
     timeout_scope: asyncio.Timeout | None = None
     initial_cancels: int = 0
     expired_generation_deadline: float | None = None
+    token_usage: ReportedTokenLedger = field(default_factory=ReportedTokenLedger)
 
     def check_deadline(self) -> None:
         if monotonic() >= self.deadline:
@@ -59,17 +64,32 @@ def check_deadlines(execution: ExecutionControl | None,
 
 
 def admit_send(execution: ExecutionControl | None,
-               generation: GenerationControl | None) -> None:
+               generation: GenerationControl | None,
+               attempt: AttemptTokenUsage | None = None) -> None:
     """Validate both policies, then claim both without yielding control."""
     check_deadlines(execution, generation)
     if execution is not None and execution.sends >= execution.budget.max_requests:
         raise ExecutionRequestLimitExceeded()
     if generation is not None and generation.sends >= generation.budget.max_requests:
         raise GenerationRequestLimitExceeded()
+    if execution is not None and execution.budget.max_reported_tokens is not None:
+        # A pending send belongs only to its own receipt; another attempt cannot borrow it.
+        if (attempt is None or attempt.ledger is not execution.token_usage
+                or attempt.settled or not execution.token_usage.complete
+                or execution.token_usage.pending_attempts != int(attempt.pending)):
+            raise ExecutionUsageUnavailable()
+        if execution.token_usage.known_tokens >= execution.budget.max_reported_tokens:
+            raise ExecutionTokenLimitExceeded()
     if execution is not None:
         execution.sends += 1
     if generation is not None:
         generation.sends += 1
+    if (execution is not None and attempt is not None
+            and attempt.ledger is execution.token_usage and not attempt.settled):
+        if execution.budget.max_reported_tokens is not None and not attempt.pending:
+            attempt.pending = True
+            execution.token_usage.pending_attempts += 1
+        attempt.sends += 1
 
 
 @asynccontextmanager
