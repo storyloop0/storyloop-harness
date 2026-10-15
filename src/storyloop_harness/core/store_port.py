@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import Protocol
-from storyloop_harness.core.generated_scene import GeneratedSceneSnapshot
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneGenerationMarker, GeneratedSceneSnapshot,
+)
 
 from storyloop_harness.core.contracts import (AgentContextCheckpoint, AgentContextEntry,
                                           Observation, PendingWork, PlayerInput, Snapshot, WorldEvent)
@@ -59,3 +61,13 @@ class GeneratedSceneSnapshotStore(Protocol):
     def generated_scene_snapshot(self, game_id: str, turn_id: str) -> GeneratedSceneSnapshot | None: ...
 
     def save_generated_scene_snapshot(self, snapshot: GeneratedSceneSnapshot) -> GeneratedSceneSnapshot: ...
+
+
+class GeneratedSceneGenerationMarkerStore(Protocol):
+    def generated_scene_generation_marker(
+        self, game_id: str, turn_id: str,
+    ) -> GeneratedSceneGenerationMarker | None: ...
+
+    def create_generated_scene_generation_marker(
+        self, marker: GeneratedSceneGenerationMarker,
+    ) -> bool: ...

@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 
 FORMAT_VERSION = 1
 GENERATION_CONTRACT_VERSION = 1
+MARKER_FORMAT_VERSION = 1
+MARKER_HASH_KEYS = (
+    'input_hash', 'base_state_hash', 'package_fingerprint', 'system_prompt_hash',
+    'output_schema_hash', 'commit_config_hash', 'generation_config_hash',
+)
+MARKER_BODY_KEYS = frozenset((
+    'format_version', 'generation_contract_version', 'marker_id', 'game_id', 'turn_id',
+    'base_version', 'base_tick', 'scenario_id', 'scenario_version', *MARKER_HASH_KEYS,
+))
 BODY_KEYS = frozenset(('format_version', 'snapshot_id', 'game_id', 'turn_id', 'input_hash',
     'base_version', 'base_tick', 'base_state_hash', 'scenario_id', 'scenario_version',
     'package_fingerprint', 'generation_contract_version', 'system_prompt_hash',
@@ -44,6 +53,11 @@ class GeneratedSceneCorrupt(ValueError):
 
 class GeneratedSceneWriteFailure(RuntimeError):
     pass
+
+
+class GeneratedSceneUncertain(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__('Generated scene outcome is uncertain')
 
 
 def canonical_json(value: object) -> str:
@@ -93,10 +107,66 @@ def package_fingerprint(package: ScenarioPackage) -> str:
 class GeneratedSceneRecovery:
     snapshot_store: GeneratedSceneSnapshotStore
     generation_identity: str
+    protect_uncertain_generation: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation_identity, str) or not self.generation_identity.strip():
             raise ValueError('generated scene recovery requires nonempty generation identity')
+        if type(self.protect_uncertain_generation) is not bool:
+            raise ValueError('protect_uncertain_generation must be a bool')
+
+
+@dataclass(frozen=True)
+class GeneratedSceneGenerationMarker:
+    canonical_json: str
+    checksum: str
+    marker_id: str
+    game_id: str
+    turn_id: str
+
+    @classmethod
+    def create(cls, **metadata: object) -> GeneratedSceneGenerationMarker:
+        body = {'format_version': MARKER_FORMAT_VERSION,
+                'generation_contract_version': GENERATION_CONTRACT_VERSION, **metadata}
+        body['marker_id'] = content_hash(body)
+        encoded = canonical_json(body)
+        return cls.from_storage(encoded, text_hash(encoded))
+
+    @classmethod
+    def from_storage(cls, canonical_json_text: str,
+                     checksum: str) -> GeneratedSceneGenerationMarker:
+        try:
+            if (not isinstance(canonical_json_text, str) or not isinstance(checksum, str)
+                    or text_hash(canonical_json_text) != checksum):
+                raise ValueError('checksum mismatch')
+            body = json.loads(canonical_json_text)
+            if (not isinstance(body, dict) or frozenset(body) != MARKER_BODY_KEYS
+                    or canonical_json(body) != canonical_json_text):
+                raise ValueError('invalid marker format')
+            for key, expected in (('format_version', MARKER_FORMAT_VERSION),
+                                  ('generation_contract_version', GENERATION_CONTRACT_VERSION)):
+                if type(body[key]) is not int or body[key] != expected:
+                    raise ValueError('unsupported marker version')
+            if (not isinstance(body['marker_id'], str) or body['marker_id'] != content_hash(
+                    {key: value for key, value in body.items() if key != 'marker_id'})):
+                raise ValueError('marker identity mismatch')
+            for key in ('game_id', 'turn_id', 'scenario_id', 'scenario_version'):
+                if not isinstance(body[key], str) or not body[key]:
+                    raise ValueError('invalid marker identity')
+            for key in MARKER_HASH_KEYS:
+                value = body[key]
+                if (not isinstance(value, str) or len(value) != 64
+                        or any(char not in '0123456789abcdef' for char in value)):
+                    raise ValueError('invalid marker binding')
+            if any(type(body[key]) is not int or body[key] < 0
+                   for key in ('base_version', 'base_tick')):
+                raise ValueError('invalid marker base state')
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            raise GeneratedSceneCorrupt('invalid generated scene generation marker') from exc
+        return cls(canonical_json_text, checksum, body['marker_id'], body['game_id'], body['turn_id'])
+
+    def metadata(self) -> dict[str, object]:
+        return json.loads(self.canonical_json)
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,10 @@ from threading import RLock
 from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry, PlayerInput
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
-from storyloop_harness.core.generated_scene import (GeneratedSceneSnapshot,
-    GeneratedSceneConflict, validate_event_snapshot_reference)
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneGenerationMarker,
+    GeneratedSceneSnapshot, validate_event_snapshot_reference,
+)
 
 
 class InMemoryGameStore:
@@ -20,7 +22,29 @@ class InMemoryGameStore:
             if len({w.work_id for w in initial_work}) != len(initial_work):
                 raise ValueError('duplicate work')
             self._games[snapshot.game_id] = deepcopy(dict(snapshot=snapshot, events={}, observations={},
-                work={w.work_id: w for w in initial_work}, consumed=set(), checkpoints={}, snapshots={}))
+                work={w.work_id: w for w in initial_work}, consumed=set(), checkpoints={},
+                snapshots={}, generation_markers={}))
+
+    def generated_scene_generation_marker(self, game_id, turn_id):
+        with self._lock:
+            row = self._games[game_id]['generation_markers'].get(turn_id)
+            if row is None:
+                return None
+            marker = GeneratedSceneGenerationMarker.from_storage(*row)
+            if (marker.game_id, marker.turn_id) != (game_id, turn_id):
+                raise GeneratedSceneCorrupt('generated scene generation marker row identity mismatch')
+            return marker
+
+    def create_generated_scene_generation_marker(self, marker):
+        validated = GeneratedSceneGenerationMarker.from_storage(marker.canonical_json, marker.checksum)
+        if validated != marker:
+            raise GeneratedSceneCorrupt('generated scene generation marker wrapper mismatch')
+        with self._lock:
+            rows = self._games[validated.game_id]['generation_markers']
+            if self.generated_scene_generation_marker(validated.game_id, validated.turn_id) is not None:
+                return False
+            rows[validated.turn_id] = (validated.canonical_json, validated.checksum)
+            return True
 
     def generated_scene_snapshot(self, game_id, turn_id):
         with self._lock:
