@@ -1,6 +1,7 @@
 """Selection and evidence guarantees for the controlled comparison."""
 import pytest
 import asyncio
+import importlib
 import json
 import httpx2
 from model_helpers import create_test_model
@@ -25,11 +26,15 @@ def _native_factory(transport):
     return factory
 
 
-def test_native_sdk_fallback_attempt_totals_and_privacy():
+def test_native_sdk_fallback_attempt_totals_and_privacy(monkeypatch):
     from examples.policy_comparison.runner import run_local
+    subject = importlib.import_module('examples.policy_comparison.task')
+    clock = [0]
+    monkeypatch.setattr(subject, 'perf_counter', lambda: clock[0])
     wire = []
 
     def transport(request):
+        clock[0] += 3
         wire.append(json.loads(request.content))
         arguments = ('invalid-json' if len(wire) == 1 else
                      json.dumps({'prose': 'window breaks', 'interaction': 'action',
@@ -48,7 +53,11 @@ def test_native_sdk_fallback_attempt_totals_and_privacy():
     assert [a['outcome'] for a in row['attempt_summary']['attempts']] == ['failed', 'succeeded']
     assert row['attempt_summary']['usage_complete'] is True
     assert row['metadata']['generation_budget'] == {'max_requests': 3, 'timeout_seconds': 90}
-    assert row['generation_seconds'] >= 0
+    assert row['generation_seconds'] == 6
+    assert row['turn_seconds'] == 6
+    assert row['timing_status']['generation'] == 'completed'
+    assert row['timing_status']['turn'] == 'completed'
+    assert row['metadata']['timing_version'] == 'policy-phases-v1'
     assert wire[0]['max_completion_tokens'] == row['metadata']['budget']['output_tokens']
     assert wire[0]['temperature'] == 0.7
     assert row['cost'] is None
@@ -199,9 +208,13 @@ def test_cleanup_cancellation_preserves_active_business_exception():
 def test_timed_capture_uses_base_capture(monkeypatch):
     from examples.evaluation.task import CaptureModel
     from examples.policy_comparison.task import TimedCaptureModel
+    subject = importlib.import_module('examples.policy_comparison.task')
+    clock = [0]
+    monkeypatch.setattr(subject, 'perf_counter', lambda: clock[0])
     called = []
 
     async def capture(self, messages, **kwargs):
+        clock[0] += 4
         called.append(messages)
         return 'captured'
 
@@ -209,7 +222,8 @@ def test_timed_capture_uses_base_capture(monkeypatch):
     model = TimedCaptureModel(object())
     assert asyncio.run(model([{'content': '{}'}])) == 'captured'
     assert called == [[{'content': '{}'}]]
-    assert model.generation_seconds >= 0
+    assert model.generation_seconds == 4
+    assert model.evidence['timing_status']['generation'] == 'completed'
 
 
 def test_native_cancellation_keeps_attempt_and_closes_model():
@@ -250,10 +264,13 @@ def test_native_cancellation_keeps_attempt_and_closes_model():
     assert models[0].client.is_closed
 
 
-def test_stream_cancellation_retains_last_known_usage():
+def test_stream_cancellation_retains_last_known_usage(monkeypatch):
     from examples.policy_comparison.task import task
     from examples.policy_comparison.cases import CASES
     from storyloop_harness.context import ContextPolicy
+    subject = importlib.import_module('examples.policy_comparison.task')
+    clock = [0]
+    monkeypatch.setattr(subject, 'perf_counter', lambda: clock[0])
     entered = asyncio.Event()
     blocker = asyncio.Event()
     captured = []
@@ -263,10 +280,12 @@ def test_stream_cancellation_retains_last_known_usage():
 
     class Stream(httpx2.AsyncByteStream):
         async def __aiter__(self):
+            clock[0] += 2
             yield sse({'id': 'offline', 'created': 0, 'model': 'offline-test',
                        'object': 'chat.completion.chunk', 'choices': [],
                        'usage': {'prompt_tokens': 7, 'completion_tokens': 2,
                                  'total_tokens': 9}})
+            clock[0] += 5
             entered.set()
             await blocker.wait()
 
@@ -289,7 +308,15 @@ def test_stream_cancellation_retains_last_known_usage():
             await running
 
     asyncio.run(run())
+    assert len(captured) == 1
     row = captured[0]
+    assert row['generation_seconds'] == 7
+    assert row['turn_seconds'] == 7
+    assert row['timing_status']['preparation'] == 'completed'
+    assert row['timing_status']['generation'] == 'cancelled'
+    assert row['timing_status']['turn'] == 'cancelled'
+    assert row['timing_status']['replay'] == 'not_started'
+    assert row['replay_seconds'] is None
     assert row['provider_input_tokens'] == 7
     assert row['provider_output_tokens'] == 2
     assert row['attempt_summary']['incomplete_stream_attempts'] == 1
