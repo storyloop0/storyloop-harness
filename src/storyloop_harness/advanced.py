@@ -16,6 +16,13 @@ from storyloop_harness.core.contracts import (
     WorldEvent,
 )
 from storyloop_harness.core.checkpoints import validate_checkpoint
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneRecovery, GeneratedSceneSnapshot, GeneratedSceneConflict,
+    GeneratedSceneMismatch, GeneratedSceneStale, GeneratedSceneCorrupt,
+    GeneratedSceneWriteFailure, package_fingerprint, validate_event_snapshot_reference,
+)
+from storyloop_harness.agents.scene_schema import SceneTurn
+from storyloop_harness.core.store_port import GeneratedSceneSnapshotStore
 from storyloop_harness.core.decisions import (
     MainDecision,
 )
@@ -86,3 +93,7 @@ from storyloop_harness.world.worldbook import (
 )
 
 __all__ = ['ActionRule', 'AgentContextCheckpoint', 'AgentContextEntry', 'Effect', 'MainDecision', 'Observation', 'OpenActionOutcome', 'PendingWork', 'PlayerEncounter', 'PlayerInput', 'RunResult', 'SceneContext', 'Snapshot', 'StatusField', 'StoryClock', 'StorySegment', 'TurnOutcome', 'TurnProgress', 'TurnRunner', 'WorkHandler', 'WorkResult', 'WorkSelector', 'WorldEvent', 'Worldbook', 'accepted_encounters', 'advance_time', 'adjudicate_action', 'apply_event', 'current_player_preferences', 'emit', 'estimate_tokens', 'merge_knowledge', 'physical_observations', 'player_preferences_scope', 'project_status_fields', 'read_path', 'render_prepared_opening', 'save_prologue', 'scenario_cue', 'segment_for_observation', 'status_effects', 'validate_checkpoint', 'validate_open_effects', 'validate_prepared_opening', 'value_at']
+__all__ += ['GeneratedSceneRecovery', 'GeneratedSceneSnapshot', 'GeneratedSceneSnapshotStore',
+            'GeneratedSceneConflict', 'GeneratedSceneMismatch', 'GeneratedSceneStale',
+            'GeneratedSceneCorrupt', 'GeneratedSceneWriteFailure', 'SceneTurn',
+            'package_fingerprint', 'validate_event_snapshot_reference']

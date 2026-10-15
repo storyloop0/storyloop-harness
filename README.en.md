@@ -12,12 +12,12 @@ Turn free-form player input into scenes and persistent world state. StoryLoop Ha
 
 ## See one turn
 
-This is the actual terminal output of `examples/offline_turn.py` for input `Hello`. It uses a deterministic model: no key, provider requests or model service charges. It demonstrates the runtime flow, not live-model narrative quality. The character label is preserved as printed.
+This is an excerpt of the installed demo's story output for input `Hello`. It uses a deterministic model: no key, provider requests or model service charges. It demonstrates the runtime flow, not live-model narrative quality.
 
 ```text
 The dockhand coils a rope and waves you toward the arriving boat.
 
-【码头工】
+【Dockhand】
 The morning boat has arrived.
 Snapshot version: 2
 ```
@@ -33,7 +33,7 @@ git clone https://github.com/storyloop0/storyloop-harness.git
 cd storyloop-harness
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
-.\.venv\Scripts\python.exe examples/offline_turn.py
+.\.venv\Scripts\python.exe -m storyloop_harness.demo
 ```
 
 **macOS / Linux**
@@ -43,10 +43,12 @@ git clone https://github.com/storyloop0/storyloop-harness.git
 cd storyloop-harness
 python3 -m venv .venv
 .venv/bin/python -m pip install .
-.venv/bin/python examples/offline_turn.py
+.venv/bin/python -m storyloop_harness.demo
 ```
 
 Next: edit the story material in the [harbor scenario](examples/freeform), or expand the reference below to supply your own model and store. For a browser interface for players and creators, use [StoryLoop Platform](https://github.com/storyloop0/storyloop-platform).
+
+The installed `storyloop-harness-demo` command (or `python -m storyloop_harness.demo`) loads its own bundled scenario without a checkout examples directory. Temporary saves are removed after the run; pass `--db story.sqlite3` to persist a save, then repeat the same `--turn-id` and `--text` to check replay. Output separates fixture invocations from provider requests (always 0); unchanged replay requires no new events and no fixture invocation. Use the harbor authoring example to edit story material.
 
 ## How the runtime works
 
@@ -155,6 +157,14 @@ print(summary.usage_complete)
 
 This records logical attempts for `CompatibleOpenAIChatModel` structured output only; internal SDK HTTP retries do not add records. The immutable summary deduplicates identical attempt identities and groups reported usage by model and task. Known token totals include reported attempts even when generation fails; with no reported usage, they are `None` rather than zero. `usage_complete` describes only the supplied nonempty structured record set: every record must have reported usage and a completed stream. In a failed or cancelled stream, reported usage is the last known count, not necessarily the full cost. This is not a complete provider invoice or whole-turn coverage. Records contain no content or exception messages, are not persisted, and do not change `collect_usage` billing.
 
+### Execution budgets across generations
+
+Import `ExecutionBudget` and `execution_budget_scope` from `storyloop_harness.generation`, then wrap same-task execution with `async with execution_budget_scope(ExecutionBudget(6, 180)):`. This optional scope shares actual compatible-adapter completion sends and a monotonic deadline, including ordinary calls; each `GenerationBudget(3, 90)` still applies independently. Controlled requests disable extra SDK retries, and child tasks inheriting a scope cannot send. Synchronous blocking cannot be interrupted precisely. This is not a token or money cap; unscoped Harness calls retain their policy.
+
+### Optional generated-scene recovery
+
+Standalone applications can import `GeneratedSceneRecovery` from `storyloop_harness.advanced` and pass `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")` to `TurnEngine`. The identity must represent non-secret model configuration; the store must implement the separate snapshot port. A validated scene is saved before the first world commit. Matching input, scenario content, generation configuration and base state can reuse it after restart without projection or model work. Already committed events resume persisted work. Historical success usage is available separately through `engine.generated_scene_snapshot(...).success_usage()` and never enters fresh `model_usage` or attempt records. A crash before save can repeat a provider call; this does not provide whole-turn atomicity, billing recovery or multiworker ownership. Recovery is disabled by default.
+
 ## Inspect and configure the budget
 
 Run from the repository root:
@@ -206,6 +216,7 @@ From the repository root, after installing the harness:
 ```sh
 python -m examples.evaluation --output result.json
 python -m examples.policy_comparison --output policy-comparison.json
+python -m examples.policy_comparison --case old-clue --policy history-recent-v1 --output selected-comparison.json
 # Optional native Langfuse runner (SDK 4.17.0):
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
@@ -213,6 +224,7 @@ python -m examples.evaluation --langfuse --output result.json
 
 - Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
 - The policy comparison runs three fixed clue cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. Actual provider tokens and cost are `null`. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using the Harness default policy.
+- Use `--case` and `--policy` to select a subset; coverage distinguishes selected, completed and excluded pairs. `--live` requires exactly one explicit case and policy, applies 3 requests/90 seconds per generation, and retains known attempt usage on success, failure or cancellation. Cost remains `null`. Cancellation writes partial evidence and exits 130; unfinished pairs stay incomplete. The live entry point has only been verified with offline SDK transports.
 - `--langfuse` writes traces/scores via the [native experiment runner](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk); set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and optionally `LANGFUSE_BASE_URL`. Server ingestion is reported as unverified.
 - `--live` calls a real provider and incurs charges; set `STORY_MODEL_API_KEY`, `STORY_MODEL_NAME`, `STORY_MODEL_BASE_URL`. Fixtures establish runtime contracts, not narrative quality or character secrecy in shared model context. Edit the task's default `ContextBudget` for small budget comparisons.
 

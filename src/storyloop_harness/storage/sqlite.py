@@ -11,6 +11,8 @@ from storyloop_harness.core.contracts import (
 )
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
+from storyloop_harness.core.generated_scene import (GeneratedSceneSnapshot,
+    GeneratedSceneConflict, validate_event_snapshot_reference)
 
 
 def _encode(value):
@@ -56,6 +58,11 @@ class SQLiteGameStore:
                 scenario_id TEXT NOT NULL, scenario_version TEXT NOT NULL,
                 source_ids TEXT NOT NULL,
                 PRIMARY KEY (game_id, actor_id));
+            CREATE TABLE IF NOT EXISTS generated_scene_snapshots (
+                game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                turn_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+                canonical_json TEXT NOT NULL, checksum TEXT NOT NULL,
+                PRIMARY KEY (game_id, turn_id));
         ''')
 
     def close(self):
@@ -91,6 +98,34 @@ class SQLiteGameStore:
             raise KeyError(game_id)
         return Snapshot(game_id, row[0], row[1], json.loads(row[2]))
 
+    def generated_scene_snapshot(self, game_id, turn_id):
+        row = self._db.execute('SELECT snapshot_id,canonical_json,checksum FROM generated_scene_snapshots '
+                               'WHERE game_id=? AND turn_id=?', (game_id, turn_id)).fetchone()
+        if row is None:
+            return None
+        record = GeneratedSceneSnapshot.from_storage(row[1], row[2])
+        if (record.snapshot_id, record.game_id, record.turn_id) != (row[0], game_id, turn_id):
+            from storyloop_harness.core.generated_scene import GeneratedSceneCorrupt
+            raise GeneratedSceneCorrupt('generated scene row identity mismatch')
+        return record
+
+    def save_generated_scene_snapshot(self, snapshot):
+        record = GeneratedSceneSnapshot.from_storage(snapshot.canonical_json, snapshot.checksum)
+        if record != snapshot:
+            from storyloop_harness.core.generated_scene import GeneratedSceneCorrupt
+            raise GeneratedSceneCorrupt('generated scene wrapper mismatch')
+        with self._transaction():
+            self.load(record.game_id)
+            prior = self.generated_scene_snapshot(record.game_id, record.turn_id)
+            if prior is not None:
+                if prior != record:
+                    raise GeneratedSceneConflict('generated scene already exists')
+                return prior
+            self._db.execute('INSERT INTO generated_scene_snapshots VALUES (?,?,?,?,?)',
+                             (record.game_id, record.turn_id, record.snapshot_id,
+                              record.canonical_json, record.checksum))
+            return self.generated_scene_snapshot(record.game_id, record.turn_id)
+
     def _events(self, game_id):
         self.load(game_id)
         return [(version, _event(payload)) for version, payload in self._db.execute(
@@ -118,6 +153,10 @@ class SQLiteGameStore:
 
     def commit(self, game_id, expected_version, event, observations, new_work, consumed_work_id=None):
         with self._transaction():
+            if event is not None and any(k in event.details for k in (
+                    'generated_scene_snapshot_id', 'generated_scene_snapshot_checksum')):
+                validate_event_snapshot_reference(event, self.generated_scene_snapshot(
+                    game_id, event.event_id.rsplit(':', 1)[0]))
             before = self.load(game_id)
             if before.version != expected_version:
                 raise ValueError('game state version changed')

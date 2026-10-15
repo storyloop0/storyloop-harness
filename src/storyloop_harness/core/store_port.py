@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from storyloop_harness.core.generated_scene import GeneratedSceneSnapshot
 
 from storyloop_harness.core.contracts import (AgentContextCheckpoint, AgentContextEntry,
                                           Observation, PendingWork, PlayerInput, Snapshot, WorldEvent)
@@ -52,3 +53,9 @@ class GameStore(Protocol):
     def ready_work(self, game_id: str, tick: int) -> list[PendingWork]: ...
 
     def pending_work(self, game_id: str) -> list[PendingWork]: ...
+
+
+class GeneratedSceneSnapshotStore(Protocol):
+    def generated_scene_snapshot(self, game_id: str, turn_id: str) -> GeneratedSceneSnapshot | None: ...
+
+    def save_generated_scene_snapshot(self, snapshot: GeneratedSceneSnapshot) -> GeneratedSceneSnapshot: ...

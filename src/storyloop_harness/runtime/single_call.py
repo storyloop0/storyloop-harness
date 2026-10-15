@@ -28,6 +28,17 @@ from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.runtime.turn_progress import TurnProgress, emit
 from storyloop_harness.world.scenario import ScenarioPackage
 from storyloop_harness.world.status_fields import status_effects
+from storyloop_harness.agents.scene_prompt import scene_system_prompt
+from storyloop_harness.agents.scene_schema import scene_output_schema
+from storyloop_harness.runtime.player_preferences import current_player_preferences
+from storyloop_harness.models.usage import capture_success_usage
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneRecovery, GeneratedSceneSnapshot, GeneratedSceneMismatch,
+    GeneratedSceneStale, GeneratedSceneCorrupt, GeneratedSceneWriteFailure,
+    GeneratedSceneConflict,
+    content_hash, text_hash, package_fingerprint, logical_value,
+    validate_event_snapshot_reference,
+)
 
 
 def validated_options(raw: list[dict], recent: tuple[str, ...] = ()) -> tuple[ActionOption, ...]:
@@ -55,7 +66,8 @@ class SingleCallGameSession:
     def __init__(self, store: GameStore, package: ScenarioPackage,
                  generator: SingleSceneGenerator, projector: SceneContextProjector,
                  *, clock: StoryClock | None = None, max_steps: int = 8,
-                 telemetry: Telemetry | None = None) -> None:
+                 telemetry: Telemetry | None = None,
+                 generated_scene_recovery: GeneratedSceneRecovery | None = None) -> None:
         self.store = store
         self.package = package
         self.generator = generator
@@ -63,7 +75,38 @@ class SingleCallGameSession:
         self.clock = clock
         self.max_steps = max_steps
         self.telemetry = telemetry or NoopTelemetry()
+        self.generated_scene_recovery = generated_scene_recovery
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+    def _bindings(self, before: Snapshot, player_text: str, max_tick: int | None) -> dict[str, object]:
+        projector = self.projector
+        return dict(input_hash=text_hash(player_text), base_version=before.version,
+            base_tick=before.tick, base_state_hash=content_hash(before.data),
+            scenario_id=self.package.package_id, scenario_version=self.package.version,
+            package_fingerprint=package_fingerprint(self.package),
+            system_prompt_hash=text_hash(scene_system_prompt(self.package)),
+            output_schema_hash=content_hash(scene_output_schema(self.package).model_json_schema()),
+            commit_config_hash=content_hash(dict(clock=logical_value(self.clock),
+                max_tick=max_tick, presentation_mode=self.package.presentation_mode,
+                package_rules=package_fingerprint(self.package))),
+            generation_config_hash=content_hash(dict(
+                context_policy=projector.context_policy.value,
+                context_spec=logical_value(projector.policy_spec),
+                context_budget=logical_value(projector.context_budget),
+                max_responders=projector.max_responders,
+                generation_identity=self.generated_scene_recovery.generation_identity)))
+
+    def _check_snapshot(self, record: GeneratedSceneSnapshot, before: Snapshot,
+                        player_text: str, max_tick: int | None, *, committed: bool = False) -> None:
+        body = record.metadata()
+        expected = self._bindings(before, player_text, max_tick)
+        for key, value in expected.items():
+            if committed and key in ('base_version', 'base_tick', 'base_state_hash'):
+                continue
+            if body[key] != value:
+                if key in ('base_version', 'base_tick', 'base_state_hash'):
+                    raise GeneratedSceneStale('generated scene base state changed')
+                raise GeneratedSceneMismatch('generated scene binding changed')
 
     def _npc_reply(self, snapshot: Snapshot, work: PendingWork) -> WorkResult:
         actor_id = work.payload["actor_id"]
@@ -142,29 +185,69 @@ class SingleCallGameSession:
             if saved is not None:
                 if saved.get("text") != player_text or not isinstance(saved.get("single_call"), dict):
                     raise ValueError("turn ID already belongs to another action")
+                if self.generated_scene_recovery is not None:
+                    record = self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
+                    if record is not None and not any(key in saved for key in (
+                            'generated_scene_snapshot_id', 'generated_scene_snapshot_checksum')):
+                        raise GeneratedSceneCorrupt('generated scene event reference missing')
+                    if any(key in saved for key in ('generated_scene_snapshot_id',
+                                                   'generated_scene_snapshot_checksum')):
+                        from storyloop_harness.core.contracts import WorldEvent
+                        reference = WorldEvent(event_id, 'player_input', 'player', None,
+                                               before.tick, (), saved)
+                        validate_event_snapshot_reference(reference, record)
+                        self._check_snapshot(record, before, player_text, max_tick, committed=True)
                 plan = SceneTurn.model_validate(saved["single_call"])
             else:
-                await emit(progress, "stage", stage="thinking")
-                try:
-                    context = self.projector.project(before, player_text)
-                except ContextBudgetExceeded as error:
-                    with self.telemetry.span('single-scene-projection',
-                            {'game_id': game_id, 'turn_id': turn_id},
-                            session_id=session_id_for_game(game_id, self.package.package_id)) as span:
-                        record_projection_metrics(span, error.report)
-                        span.metric('story.context.rejected', 1.0)
-                    raise
-                with self.telemetry.span(
-                    "single-call-turn", {"game_id": game_id, "turn_id": turn_id,
-                                          "focus_actor_ids": list(context.focus_actor_ids)},
-                    session_id=session_id_for_game(game_id, self.package.package_id),
-                ) as span:
-                    plan = await self.generator.generate(game_id, context)
-                    plan = self._validate_plan(before, plan, context.focus_actor_ids,
-                                               context.nearby_actor_ids)
-                    span.metric("story.turn_model_calls", 1.0)
-                await emit(progress, "stage", stage="committing")
-                before = self._commit_player(before, turn_id, player_text, plan, max_tick)
+                record = (self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
+                          if self.generated_scene_recovery is not None else None)
+                if record is not None:
+                    self._check_snapshot(record, before, player_text, max_tick)
+                    plan = record.scene()
+                    await emit(progress, 'stage', stage='committing')
+                    before = self._commit_player(before, turn_id, player_text, plan, max_tick, record)
+                else:
+                    await emit(progress, "stage", stage="thinking")
+                    try:
+                        context = self.projector.project(before, player_text)
+                    except ContextBudgetExceeded as error:
+                        with self.telemetry.span('single-scene-projection',
+                                {'game_id': game_id, 'turn_id': turn_id},
+                                session_id=session_id_for_game(game_id, self.package.package_id)) as span:
+                            record_projection_metrics(span, error.report)
+                            span.metric('story.context.rejected', 1.0)
+                        raise
+                    with self.telemetry.span(
+                        "single-call-turn", {"game_id": game_id, "turn_id": turn_id,
+                                              "focus_actor_ids": list(context.focus_actor_ids)},
+                        session_id=session_id_for_game(game_id, self.package.package_id),
+                    ) as span:
+                        if self.generated_scene_recovery is not None:
+                            with capture_success_usage() as success:
+                                plan = await self.generator.generate(game_id, context)
+                        else:
+                            plan = await self.generator.generate(game_id, context)
+                        plan = self._validate_plan(before, plan, context.focus_actor_ids,
+                                                   context.nearby_actor_ids)
+                        span.metric("story.turn_model_calls", 1.0)
+                    if self.generated_scene_recovery is not None:
+                        record = GeneratedSceneSnapshot.create(
+                            game_id=game_id, turn_id=turn_id,
+                            **self._bindings(before, player_text, max_tick),
+                            projected_request_hash=content_hash(context.request),
+                            focus_actor_ids=context.focus_actor_ids,
+                            nearby_actor_ids=context.nearby_actor_ids,
+                            preference_hash=content_hash(current_player_preferences()),
+                            scene=plan, success_usage=tuple(success.records),
+                            usage_coverage=success.coverage)
+                        try:
+                            record = self.generated_scene_recovery.snapshot_store.save_generated_scene_snapshot(record)
+                        except GeneratedSceneConflict:
+                            raise
+                        except Exception as exc:
+                            raise GeneratedSceneWriteFailure('generated scene save failed') from exc
+                    await emit(progress, "stage", stage="committing")
+                    before = self._commit_player(before, turn_id, player_text, plan, max_tick, record)
             await emit(progress, "stage", stage="characters")
             processed = await self._runner().run_async(game_id)
             observations = tuple(item for item in self.store.observations_for(game_id, "player")
@@ -255,7 +338,8 @@ class SingleCallGameSession:
                                        "milestones_fulfilled": milestones})
 
     def _commit_player(self, before: Snapshot, turn_id: str, player_text: str,
-                       plan: SceneTurn, max_tick: int | None) -> Snapshot:
+                       plan: SceneTurn, max_tick: int | None,
+                       generated_scene: GeneratedSceneSnapshot | None = None) -> Snapshot:
         decision = plan.decision
         duration_ticks = self.clock.elapsed(decision.duration, before.tick) if self.clock else 1
         if max_tick is not None:
@@ -273,6 +357,9 @@ class SingleCallGameSession:
             "channel": decision.channel, "audience": decision.audience,
             "single_call": plan.model_dump(),
         }
+        if generated_scene is not None:
+            details['generated_scene_snapshot_id'] = generated_scene.snapshot_id
+            details['generated_scene_snapshot_checksum'] = generated_scene.checksum
         effects: tuple[Effect, ...] = ()
         prose = plan.prose
         if decision.intent == "action":

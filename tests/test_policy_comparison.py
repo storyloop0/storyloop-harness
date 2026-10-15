@@ -57,14 +57,14 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     assert report['passed'] is False
     assert len(report['rows']) == 12
     assert all(row['error']['type'] == 'RuntimeError' for row in report['rows'])
-    async def malformed_task(*, case, policy):
+    async def malformed_task(*, case, policy, model_mode, model_factory, evidence_sink):
         return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
                 'checks': {'scope': False}}
     malformed = run_local(task_fn=malformed_task)
     assert malformed['passed'] is False
     assert len(malformed['rows']) == 12
     assert all(row['error']['type'] == 'ValueError' for row in malformed['rows'])
-    async def unhashable_task(*, case, policy):
+    async def unhashable_task(*, case, policy, model_mode, model_factory, evidence_sink):
         return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
                 'checks': {name: True for name in ('scope', 'dispatch_match', 'state',
                                                    'model_calls', 'recent_clue', 'old_clue_expected')},
@@ -73,16 +73,16 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     unhashable = run_local(task_fn=unhashable_task)
     assert unhashable['passed'] is False
     assert len(unhashable['rows']) == 12
-    monkeypatch.setattr(__main__, 'run_local', lambda: {'passed': False, 'rows': report['rows'][:1]})
+    monkeypatch.setattr(__main__, 'run_local', lambda **kwargs: {'passed': False, 'rows': report['rows'][:1]})
     assert __main__.main([]) == 1
     assert json.loads(capsys.readouterr().out)['passed'] is False
 
 
 def test_cli_writes_same_json_and_returns_zero(tmp_path, monkeypatch, capsys):
     from examples.policy_comparison import __main__
-    monkeypatch.setattr(__main__, 'run_local', lambda: {'passed': True, 'rows': []})
     target = tmp_path / 'comparison.json'
-    assert __main__.main(['--output', str(target)]) == 0
+    assert __main__.main(['--case', 'old-clue', '--policy', 'history-recent-v1',
+                          '--output', str(target)]) == 0
     assert json.loads(target.read_text(encoding='utf-8')) == json.loads(capsys.readouterr().out)
 
 

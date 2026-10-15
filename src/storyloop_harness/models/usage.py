@@ -32,6 +32,12 @@ class UsageCollector:
         self.records.append(model_usage_from_response(model, task, usage))
 
 
+@dataclass
+class SuccessUsageCapture:
+    records: list[ModelUsage] = field(default_factory=list)
+    coverage: str = 'unobserved'
+
+
 def model_usage_from_response(model: str, task: str, usage: object) -> ModelUsage:
     """Snapshot an AgentScope usage report using the billing cache-token rules."""
     if usage is None:
@@ -50,6 +56,17 @@ def model_usage_from_response(model: str, task: str, usage: object) -> ModelUsag
 
 
 _active_usage: ContextVar[UsageCollector | None] = ContextVar("story_billing_usage", default=None)
+_success_usage: ContextVar[SuccessUsageCapture | None] = ContextVar('story_success_usage', default=None)
+
+
+@contextmanager
+def capture_success_usage() -> Iterator[SuccessUsageCapture]:
+    capture = SuccessUsageCapture()
+    token = _success_usage.set(capture)
+    try:
+        yield capture
+    finally:
+        _success_usage.reset(token)
 
 
 @contextmanager
@@ -64,5 +81,20 @@ def collect_usage() -> Iterator[UsageCollector]:
 
 def record_model_usage(model: str, task: str, usage: object) -> None:
     collector = _active_usage.get()
+    capture = _success_usage.get()
     if collector is not None:
-        collector.record(model, task, usage)
+        try:
+            collector.record(model, task, usage)
+        except BaseException:
+            if capture is not None:
+                capture.coverage = 'missing' if usage is None else 'invalid'
+            raise
+        if capture is not None:
+            capture.records.append(collector.records[-1])
+            capture.coverage = 'reported'
+    elif capture is not None:
+        try:
+            capture.records.append(model_usage_from_response(model, task, usage))
+            capture.coverage = 'reported'
+        except (TypeError, ValueError, AttributeError, RuntimeError):
+            capture.coverage = 'missing' if usage is None else 'invalid'

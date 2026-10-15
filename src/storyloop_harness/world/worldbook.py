@@ -27,6 +27,10 @@ class Worldbook:
         if len(self._entries) != len(entries):
             raise ValueError("duplicate worldbook entry ID")
 
+    @property
+    def entries(self) -> tuple[WorldbookEntry, ...]:
+        return tuple(self._entries.values())
+
     @classmethod
     def load(cls, path: str | Path) -> Worldbook:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

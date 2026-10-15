@@ -10,6 +10,7 @@ from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.core.contracts import AgentContextCheckpoint, Effect, Observation, WorldEvent
 from storyloop_harness.storage import SQLiteGameStore
 from storyloop_harness.testing import OfflineModel
+from storyloop_harness.generation import ExecutionRequestLimitExceeded, ExecutionTimeout
 
 
 def test_checkpoint_lifecycle_has_public_integration_imports():
@@ -198,4 +199,18 @@ def test_engine_runs_optional_maintenance_after_turn_and_keeps_turn_on_failure(t
             assert replay.model_usage == ()
             assert tuple(calls) == before_replay
 
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('error', [ExecutionRequestLimitExceeded, ExecutionTimeout])
+def test_checkpoint_maintenance_rethrows_execution_error(tmp_path, error):
+    async def run():
+        package = source_package()
+        with SQLiteGameStore(tmp_path / 'execution.db') as store:
+            seed(store, package, 'game', 24)
+            async def summarize(_request):
+                raise error()
+            engine = TurnEngine(store, package, OfflineModel(), checkpoint_summarizer=summarize)
+            with pytest.raises(error):
+                await engine.run_turn(TurnInput('game', 'Guide hello', 'turn-1', package.version))
     asyncio.run(run())

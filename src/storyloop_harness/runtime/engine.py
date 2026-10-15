@@ -16,6 +16,8 @@ from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.context.checkpoints import CheckpointLifecycle, CheckpointSummarizer
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
+from storyloop_harness.models.execution_budget import ExecutionRequestLimitExceeded, ExecutionTimeout
+from storyloop_harness.core.generated_scene import GeneratedSceneRecovery
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +45,16 @@ class TurnEngine:
                  max_responders: int = 3, context_budget: ContextBudget | None = None,
                  max_steps: int = 8, telemetry: Telemetry | None = None,
                  checkpoint_summarizer: CheckpointSummarizer | None = None,
-                 context_policy: ContextPolicy | None = None):
+                 context_policy: ContextPolicy | None = None,
+                 generated_scene_recovery: GeneratedSceneRecovery | None = None):
+        if generated_scene_recovery is not None:
+            if generated_scene_recovery.snapshot_store is not store:
+                raise ValueError('generated scene store must be the engine game store')
+            if not all(callable(getattr(store, name, None)) for name in (
+                    'generated_scene_snapshot', 'save_generated_scene_snapshot')):
+                raise ValueError('generated scene store does not implement snapshot port')
         self.package = package
+        self.generated_scene_recovery = generated_scene_recovery
         self.store = _RecordingStore(store)
         self.checkpoints = (CheckpointLifecycle(self.store, package, checkpoint_summarizer)
                             if checkpoint_summarizer is not None else None)
@@ -53,7 +63,13 @@ class TurnEngine:
             SceneContextProjector(self.store, package, clock=clock, program=program,
                                   max_responders=max_responders,
                                   context_budget=context_budget, context_policy=context_policy),
-            clock=clock, max_steps=max_steps, telemetry=telemetry)
+            clock=clock, max_steps=max_steps, telemetry=telemetry,
+            generated_scene_recovery=generated_scene_recovery)
+
+    def generated_scene_snapshot(self, game_id: str, turn_id: str):
+        if self.generated_scene_recovery is None:
+            raise ValueError('generated scene recovery is not configured')
+        return self.generated_scene_recovery.snapshot_store.generated_scene_snapshot(game_id, turn_id)
 
     def _snapshot_for(self, turn: TurnInput):
         if turn.scenario_version != self.package.version:
@@ -82,6 +98,8 @@ class TurnEngine:
                     for actor_id in ('player', *(actor for actor, _ in self.package.actor_cards)):
                         try:
                             await self.checkpoints.refresh(turn.game_id, actor_id)
+                        except (ExecutionRequestLimitExceeded, ExecutionTimeout):
+                            raise
                         except Exception as exc:
                             logger.warning('checkpoint refresh failed (%s)', type(exc).__name__)
             return replace(result, events=tuple(events), model_usage=tuple(usage.records))

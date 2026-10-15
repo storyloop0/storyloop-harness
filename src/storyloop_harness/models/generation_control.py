@@ -79,9 +79,23 @@ async def controlled_generation(budget: GenerationBudget | None,
                 control.initial_cancels = control.task.cancelling() if control.task else 0
                 yield control
                 control.check_deadline()
+        except asyncio.CancelledError:
+            # Both timeout callbacks can cancel the same task after a blocked
+            # event loop resumes. Keep the inner deadline for the outer scope,
+            # which is the one asyncio will turn into TimeoutError.
+            from .execution_control import current_execution_control
+            execution = current_execution_control()
+            if (execution is not None and timeout_scope.expired()
+                    and execution.timeout_scope is not None
+                    and execution.timeout_scope.expired()
+                    and control.deadline < execution.deadline):
+                execution.expired_generation_deadline = control.deadline
+            raise
         except TimeoutError as error:
-            if isinstance(error, GenerationTimeout) or not timeout_scope.expired():
+            if not timeout_scope.expired() and not isinstance(error, GenerationTimeout):
                 raise
-            raise GenerationTimeout() from None
+            from .execution_control import check_deadlines, current_execution_control
+            check_deadlines(current_execution_control(), control)
+            raise
     finally:
         _active_control.reset(token)

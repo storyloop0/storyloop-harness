@@ -4,6 +4,8 @@ from threading import RLock
 from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry, PlayerInput
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
+from storyloop_harness.core.generated_scene import (GeneratedSceneSnapshot,
+    GeneratedSceneConflict, validate_event_snapshot_reference)
 
 
 class InMemoryGameStore:
@@ -18,7 +20,28 @@ class InMemoryGameStore:
             if len({w.work_id for w in initial_work}) != len(initial_work):
                 raise ValueError('duplicate work')
             self._games[snapshot.game_id] = deepcopy(dict(snapshot=snapshot, events={}, observations={},
-                work={w.work_id: w for w in initial_work}, consumed=set(), checkpoints={}))
+                work={w.work_id: w for w in initial_work}, consumed=set(), checkpoints={}, snapshots={}))
+
+    def generated_scene_snapshot(self, game_id, turn_id):
+        with self._lock:
+            row = self._games[game_id]['snapshots'].get(turn_id)
+            return GeneratedSceneSnapshot.from_storage(*row) if row else None
+
+    def save_generated_scene_snapshot(self, snapshot):
+        record = GeneratedSceneSnapshot.from_storage(snapshot.canonical_json, snapshot.checksum)
+        if record != snapshot:
+            from storyloop_harness.core.generated_scene import GeneratedSceneCorrupt
+            raise GeneratedSceneCorrupt('generated scene wrapper mismatch')
+        with self._lock:
+            rows = self._games[record.game_id]['snapshots']
+            prior = rows.get(record.turn_id)
+            if prior is not None:
+                saved = GeneratedSceneSnapshot.from_storage(*prior)
+                if saved != record:
+                    raise GeneratedSceneConflict('generated scene already exists')
+                return saved
+            rows[record.turn_id] = (record.canonical_json, record.checksum)
+            return self.generated_scene_snapshot(record.game_id, record.turn_id)
 
     def load(self, game_id):
         return deepcopy(self._games[game_id]['snapshot'])
@@ -35,6 +58,10 @@ class InMemoryGameStore:
 
     def commit(self, game_id, expected_version, event, observations, new_work, consumed_work_id=None):
         with self._lock:
+            if event is not None and any(k in event.details for k in (
+                    'generated_scene_snapshot_id', 'generated_scene_snapshot_checksum')):
+                validate_event_snapshot_reference(event, self.generated_scene_snapshot(
+                    game_id, event.event_id.rsplit(':', 1)[0]))
             game = deepcopy(self._games[game_id])
             before = game['snapshot']
             if before.version != expected_version:

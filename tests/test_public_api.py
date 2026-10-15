@@ -140,6 +140,16 @@ def test_documented_adapter_surfaces_export_story_types_without_product_types():
     assert usage.ModelUsage('offline', 'turn', 0, 0).input_tokens == 0
 
 
+def test_generated_scene_persistence_contract_is_public():
+    from storyloop_harness import advanced
+
+    for name in ('GeneratedSceneSnapshot', 'GeneratedSceneConflict',
+                 'GeneratedSceneCorrupt', 'SceneTurn',
+                 'validate_event_snapshot_reference'):
+        assert name in advanced.__all__
+        assert getattr(advanced, name)
+
+
 def test_legacy_work_injection_and_emitter_are_removed():
     import inspect
     from storyloop_harness import TurnEngine, advanced

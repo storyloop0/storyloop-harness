@@ -1,0 +1,7 @@
+{
+  "package_id": "installed-harbor-demo",
+  "version": "1.0",
+  "entries": [
+    {"id": "dockhand_card", "kind": "card", "visibility": "actor", "allowed_actors": ["dockhand"], "text": "You are a dockhand at the harbor. Speak from what you can see."}
+  ]
+}

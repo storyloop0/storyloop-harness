@@ -12,12 +12,12 @@
 
 ## 先看一个回合
 
-下面是 `examples/offline_turn.py` 对输入 `Hello` 的实际终端输出。它使用确定性模型，无需密钥、不请求模型服务，也不产生模型服务费用；用于检查运行流程，不代表真实模型的叙事质量。
+下面是安装后演示对输入 `Hello` 的故事输出节选。它使用确定性模型，无需密钥、不请求模型服务，也不产生模型服务费用；用于检查运行流程，不代表真实模型的叙事质量。
 
 ```text
 The dockhand coils a rope and waves you toward the arriving boat.
 
-【码头工】
+【Dockhand】
 The morning boat has arrived.
 Snapshot version: 2
 ```
@@ -33,7 +33,7 @@ git clone https://github.com/storyloop0/storyloop-harness.git
 cd storyloop-harness
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
-.\.venv\Scripts\python.exe examples/offline_turn.py
+.\.venv\Scripts\python.exe -m storyloop_harness.demo
 ```
 
 **macOS / Linux**
@@ -43,10 +43,12 @@ git clone https://github.com/storyloop0/storyloop-harness.git
 cd storyloop-harness
 python3 -m venv .venv
 .venv/bin/python -m pip install .
-.venv/bin/python examples/offline_turn.py
+.venv/bin/python -m storyloop_harness.demo
 ```
 
 下一步：修改[港口剧本](examples/freeform)的故事素材，或展开下方参考接入自己的模型与存储。需要浏览器中的玩家与创作者界面，请使用 [StoryLoop Platform](https://github.com/storyloop0/storyloop-platform)。
+
+安装后的 `storyloop-harness-demo`（或 `python -m storyloop_harness.demo`）从包内读取独立演示剧本，无需仓库的 examples 目录。默认临时存档在运行结束后移除；显式指定 `--db story.sqlite3` 可持久保存，再运行相同的 `--turn-id` 和 `--text` 检查重放。输出分别显示离线夹具调用数和供应商请求数（始终为 0）；只有没有新事件且没有夹具调用时才标为 unchanged replay。修改故事素材仍使用港口作者示例。
 
 ## 运行时如何工作
 
@@ -152,6 +154,14 @@ print(summary.usage_complete)
 
 这里只记录 `CompatibleOpenAIChatModel` 结构化输出的逻辑尝试；SDK 内部 HTTP 重试不另计。不可变汇总会去除标识及内容完全相同的重复尝试，并按模型和任务合并已报告用量。已知 Token 小计也包含失败尝试的有效报告；没有已报告用量时为 `None`，不是零。`usage_complete` 只描述传入的非空结构化记录集：每条记录都必须有已报告用量，且流已完成。流失败或取消时，已报告用量只是最后已知值，不一定覆盖全部费用；汇总并非完整的供应商账单或整个回合的覆盖证明。记录不含内容或异常消息，也不持久化；`collect_usage` 的计费行为不变。
 
+### 跨生成的执行预算
+
+从 `storyloop_harness.generation` 导入 `ExecutionBudget` 与 `execution_budget_scope`，用 `async with execution_budget_scope(ExecutionBudget(6, 180)):` 包住同一任务的执行。该可选作用域共享兼容适配器实际补全发送次数和单调时钟期限，包括普通调用；各次 `GenerationBudget(3, 90)` 仍独立生效。受控请求关闭 SDK 额外重试，子任务继承作用域后拒绝发送。同步阻塞无法被准时打断；这不是 Token 或费用上限，未设置作用域的 Harness 调用保持原策略。
+
+### 可选的生成结果恢复
+
+独立应用可从 `storyloop_harness.advanced` 导入 `GeneratedSceneRecovery`，给 `TurnEngine` 传入 `generated_scene_recovery=GeneratedSceneRecovery(store, "model-config:v1")`。身份字符串应代表非敏感模型配置，store 须实现单独的快照存储接口。验证后的场景在第一次世界提交前持久保存；相同输入、剧本内容、生成配置和基础状态可在重启后复用，跳过投影和模型。事件已提交时沿用持久待办恢复。历史成功用量通过 `engine.generated_scene_snapshot(...).success_usage()` 单独读取，不进入本次 `model_usage` 或尝试记录。保存前崩溃仍可能重复调用供应商；这不提供整回合原子性、计费恢复或多 worker 所有权。默认关闭。
+
 ## 检查上下文与配置预算
 
 在仓库根目录运行：
@@ -203,6 +213,7 @@ SQLite 保存角色与剧本身份、覆盖版本和本次来源 ID；原始事�
 ```sh
 python -m examples.evaluation --output result.json
 python -m examples.policy_comparison --output policy-comparison.json
+python -m examples.policy_comparison --case old-clue --policy history-recent-v1 --output selected-comparison.json
 # 可选的原生 Langfuse 执行器（SDK 4.17.0）：
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
@@ -210,6 +221,7 @@ python -m examples.evaluation --langfuse --output result.json
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
 - 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；真实服务商 Token 与成本为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+- 策略对照可用 `--case`、`--policy` 选择子集；报告区分选中、完成和排除的组合。加 `--live` 时必须明确选一个案例和策略，每次生成采用 3 次/90 秒限制，记录成功、失败或取消的已知尝试用量；成本仍为 `null`。取消保存部分证据后以 130 退出，未完成组合不算完成。当前真实调用入口仅经离线 SDK transport 验证。
 - `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
 - `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。
 
