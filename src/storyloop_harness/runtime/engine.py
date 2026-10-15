@@ -56,6 +56,11 @@ class TurnEngine:
             if not all(callable(getattr(store, name, None)) for name in (
                     'generated_scene_snapshot', 'save_generated_scene_snapshot')):
                 raise ValueError('generated scene store does not implement snapshot port')
+            if (generated_scene_recovery.protect_uncertain_generation
+                    and not all(callable(getattr(store, name, None)) for name in (
+                        'generated_scene_generation_marker',
+                        'create_generated_scene_generation_marker'))):
+                raise ValueError('generated scene store does not implement generation marker port')
         self.package = package
         self.generated_scene_recovery = generated_scene_recovery
         self.store = _RecordingStore(store)

@@ -34,6 +34,7 @@ from storyloop_harness.runtime.player_preferences import current_player_preferen
 from storyloop_harness.models.usage import capture_success_usage
 from storyloop_harness.core.generated_scene import (
     GeneratedSceneRecovery, GeneratedSceneSnapshot, GeneratedSceneRecoveryInspection,
+    GeneratedSceneGenerationMarker, GeneratedSceneUncertain,
     GeneratedSceneMismatch,
     GeneratedSceneStale, GeneratedSceneCorrupt, GeneratedSceneWriteFailure,
     GeneratedSceneConflict,
@@ -118,6 +119,55 @@ class SingleCallGameSession:
                 break
         return event_id, self.store.event_details(game_id, event_id)
 
+    def _check_generation_marker(self, marker: GeneratedSceneGenerationMarker,
+                                 before: Snapshot, turn_id: str, input_hash: str,
+                                 max_tick: int | None) -> None:
+        if not isinstance(marker, GeneratedSceneGenerationMarker):
+            raise GeneratedSceneCorrupt('generated scene generation marker wrapper identity mismatch')
+        validated = GeneratedSceneGenerationMarker.from_storage(marker.canonical_json, marker.checksum)
+        if (validated != marker or marker.game_id != before.game_id or marker.turn_id != turn_id):
+            raise GeneratedSceneCorrupt('generated scene generation marker wrapper identity mismatch')
+        body = validated.metadata()
+        for key, value in self._bindings(before, input_hash, max_tick).items():
+            if body[key] != value:
+                if key in ('base_version', 'base_tick', 'base_state_hash'):
+                    raise GeneratedSceneStale('generated scene base state changed')
+                raise GeneratedSceneMismatch('generated scene binding changed')
+
+    def _inspect_uncertain_generation(self, before: Snapshot, turn_id: str,
+                                      input_hash: str, max_tick: int | None) -> None:
+        recovery = self.generated_scene_recovery
+        if recovery is None or not recovery.protect_uncertain_generation:
+            return
+        marker = recovery.snapshot_store.generated_scene_generation_marker(before.game_id, turn_id)
+        if marker is not None:
+            self._check_generation_marker(marker, before, turn_id, input_hash, max_tick)
+            raise GeneratedSceneUncertain()
+
+    def _claim_generation(self, before: Snapshot, turn_id: str,
+                          input_hash: str, max_tick: int | None) -> None:
+        recovery = self.generated_scene_recovery
+        if recovery is None or not recovery.protect_uncertain_generation:
+            return
+        marker = GeneratedSceneGenerationMarker.create(game_id=before.game_id, turn_id=turn_id,
+            **self._bindings(before, input_hash, max_tick))
+        try:
+            claimed = recovery.snapshot_store.create_generated_scene_generation_marker(marker)
+        except (GeneratedSceneCorrupt, GeneratedSceneConflict,
+                GeneratedSceneMismatch, GeneratedSceneStale):
+            raise
+        except Exception as exc:
+            raise GeneratedSceneWriteFailure('generated scene generation marker save failed') from exc
+        if claimed is True:
+            return
+        if claimed is not False:
+            raise GeneratedSceneWriteFailure('generated scene generation marker save failed')
+        prior = recovery.snapshot_store.generated_scene_generation_marker(before.game_id, turn_id)
+        if prior is None:
+            raise GeneratedSceneCorrupt('generated scene generation marker missing after occupied claim')
+        self._check_generation_marker(prior, before, turn_id, input_hash, max_tick)
+        raise GeneratedSceneUncertain()
+
     def inspect_generated_scene_recovery(
             self, before: Snapshot, turn_id: str, input_hash: str,
             max_tick: int | None = None) -> GeneratedSceneRecoveryInspection | None:
@@ -131,6 +181,15 @@ class SingleCallGameSession:
         if record is None:
             if referenced:
                 raise GeneratedSceneCorrupt('generated scene event reference missing snapshot')
+            if self.generated_scene_recovery.protect_uncertain_generation:
+                if saved is not None:
+                    if (not isinstance(saved.get('text'), str)
+                            or text_hash(saved['text']) != input_hash
+                            or not isinstance(saved.get('single_call'), dict)):
+                        raise ValueError('turn ID already belongs to another action')
+                    SceneTurn.model_validate(saved['single_call'])
+                else:
+                    self._inspect_uncertain_generation(before, turn_id, input_hash, max_tick)
             return None
         validated = GeneratedSceneSnapshot.from_storage(record.canonical_json, record.checksum)
         if validated != record or record.game_id != before.game_id or record.turn_id != turn_id:
@@ -242,6 +301,7 @@ class SingleCallGameSession:
                                               "focus_actor_ids": list(context.focus_actor_ids)},
                         session_id=session_id_for_game(game_id, self.package.package_id),
                     ) as span:
+                        self._claim_generation(before, turn_id, text_hash(player_text), max_tick)
                         if self.generated_scene_recovery is not None:
                             with capture_success_usage() as success:
                                 plan = await self.generator.generate(game_id, context)
