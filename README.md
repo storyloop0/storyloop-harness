@@ -238,6 +238,10 @@ python -m examples.evaluation --langfuse --output result.json
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
 - 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；真实服务商 Token 与成本为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+
+  报告列出 `preparation_seconds`、`projection_seconds`、`generation_seconds`、`turn_seconds` 和 `replay_seconds`；`metadata.timing_version` 为 `policy-phases-v1`。准备阶段从 task 进入、创建临时存储之前开始，到首次回合调用之前结束，包含构造、历史、元数据和单独测量的预检投影。生成耗时覆盖被 await 的适配器调用，含请求捕获、重试/回退与流消费，属于回合耗时；回合计时在尝试汇总、结果检查和存储关闭之前结束。原存储关闭后开始重放计时，包含重开同一 SQLite、构造新 engine、同输入重放和关闭存储；比较在计时之外。这些单调时钟秒数有嵌套，不能相加；不是供应商纯推理、首 Token 延迟、进程启动或总任务耗时，报告写盘、临时目录删除和模型客户端关闭不包含在内。
+
+  `timing_status` 按阶段记录 `not_started`、`completed`、`failed` 或 `cancelled`。未启动耗时为 `null`；已启动阶段失败或取消时保留经过时间。后续取证或清理失败使整行失败，但不改写已完成状态。重放使用独立且禁止生成的模型，必需检查确认没有新调用、事件、尝试、用量或版本增长，且状态和叙述相同。首次生成用量保持独立。fixture 的供应商用量和成本仍未知，耗时不能证明质量或价格改善。
 - 策略对照可用 `--case`、`--policy` 选择子集；报告区分选中、完成和排除的组合。加 `--live` 时必须明确选一个案例和策略，每次生成采用 3 次/90 秒限制，记录成功、失败或取消的已知尝试用量；成本仍为 `null`。取消保存部分证据后以 130 退出，未完成组合不算完成。当前真实调用入口仅经离线 SDK transport 验证。
 - `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
 - `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。

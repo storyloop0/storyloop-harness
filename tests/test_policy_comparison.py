@@ -1,5 +1,9 @@
 """The offline comparison is complete, scoped, and failure-aware."""
+import asyncio
+from copy import deepcopy
+import importlib
 import json
+import pytest
 
 
 def test_full_offline_matrix_records_comparable_evidence(monkeypatch):
@@ -25,6 +29,15 @@ def test_full_offline_matrix_records_comparable_evidence(monkeypatch):
         assert row['estimated_request_tokens'] > 0
         assert row['projection_seconds'] >= 0
         assert row['turn_seconds'] >= 0
+        assert all(row[f'{phase}_seconds'] >= 0 for phase in
+                   ('preparation', 'projection', 'generation', 'turn', 'replay'))
+        assert all(row['timing_status'][phase] == 'completed' for phase in
+                   ('preparation', 'projection', 'generation', 'turn', 'replay'))
+        assert row['replay'] == {'new_calls': 0, 'new_events': 0, 'version_delta': 0,
+                                 'same_state': True, 'same_narration': True, 'usage_count': 0}
+        assert row['replay_attempt_count'] == 0
+        assert row['checks']['replay'] is True
+        assert row['metadata']['timing_version'] == 'policy-phases-v1'
         assert row['source_ids']['selected']
         assert row['source_ids']['omitted']
         assert row['checks']['scope'] is True
@@ -67,7 +80,8 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     async def unhashable_task(*, case, policy, model_mode, model_factory, evidence_sink):
         return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
                 'checks': {name: True for name in ('scope', 'dispatch_match', 'state',
-                                                   'model_calls', 'recent_clue', 'old_clue_expected')},
+                                                   'model_calls', 'recent_clue', 'old_clue_expected',
+                                                   'replay')},
                 'result': {'window_broken': True, 'action_outcome': 'accepted',
                            'state_version_delta': 1, 'state_sha256': [], 'events_sha256': 'a' * 64}}
     unhashable = run_local(task_fn=unhashable_task)
@@ -97,3 +111,107 @@ def test_git_revision_is_optional(monkeypatch):
         raise subprocess.TimeoutExpired('git', 5)
     monkeypatch.setattr(task.subprocess, 'run', timeout)
     assert task._revision() is None
+
+
+@pytest.mark.parametrize('mutation,expected_error', [
+    ('missing', 'ValueError'), ('nonbool', 'ValueError'), ('false', None),
+])
+def test_runner_requires_exact_boolean_replay_check(mutation, expected_error):
+    from examples.policy_comparison.runner import run_local
+    baseline = run_local(case_ids=('old-clue',), policy_ids=('history-recent-v1',))['rows'][0]
+
+    async def altered(*, case, policy, model_mode, model_factory, evidence_sink):
+        row = deepcopy(baseline)
+        row['checks'].pop('same_authoritative_result', None)
+        if mutation == 'missing':
+            del row['checks']['replay']
+        else:
+            row['checks']['replay'] = 1 if mutation == 'nonbool' else False
+        if mutation == 'false':
+            row['passed'] = False
+        return row
+
+    report = run_local(task_fn=altered, case_ids=('old-clue',),
+                       policy_ids=('history-recent-v1',))
+    assert report['passed'] is False and len(report['rows']) == 1
+    if expected_error:
+        assert report['rows'][0]['error'] == {'type': expected_error}
+    else:
+        assert report['rows'][0]['checks']['replay'] is False
+        assert report['rows'][0]['passed'] is False
+
+
+def test_actual_replay_failure_propagates_to_runner_and_cli(monkeypatch, capsys):
+    from examples.policy_comparison import __main__
+    from examples.policy_comparison.runner import run_local
+    subject = importlib.import_module('examples.policy_comparison.task')
+    real_engine = subject.TurnEngine
+    engines = []
+    calls = []
+
+    class Delegate(subject.Fixture):
+        async def __call__(self, messages, **kwargs):
+            calls.append(1)
+            return await super().__call__(messages, **kwargs)
+
+    class Engine(real_engine):
+        def __init__(self, store, package, model, **kwargs):
+            engines.append(self)
+            self.replay_model = model
+            super().__init__(store, package, model, **kwargs)
+
+        async def run_turn(self, turn):
+            if len(engines) == 2 and self is engines[1]:
+                await self.replay_model([], injected=True)
+            return await super().run_turn(turn)
+
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    report = run_local(case_ids=('old-clue',), policy_ids=('history-recent-v1',),
+                       model_factory=Delegate)
+    assert report['passed'] is False and len(report['rows']) == 1
+    row = report['rows'][0]
+    assert len(calls) == 1
+    assert row['result']['window_broken'] is True
+    assert row['timing_status']['replay'] == 'failed'
+    assert row['checks']['replay'] is False
+    assert row['replay']['new_calls'] == 1
+    monkeypatch.setattr(__main__, 'run_local', lambda **kwargs: report)
+    assert __main__.main([]) == 1
+    assert json.loads(capsys.readouterr().out)['rows'][0]['checks']['replay'] is False
+
+
+def test_actual_replay_cancellation_writes_partial_report_and_cli_returns_130(
+        monkeypatch, tmp_path):
+    from examples.policy_comparison import __main__
+    from examples.policy_comparison.runner import run_local
+    subject = importlib.import_module('examples.policy_comparison.task')
+    real_engine = subject.TurnEngine
+    original = asyncio.CancelledError('PRIVATE_SENTINEL')
+    engines = []
+    output = tmp_path / 'cancelled.json'
+
+    class Engine(real_engine):
+        def __init__(self, *args, **kwargs):
+            engines.append(self)
+            super().__init__(*args, **kwargs)
+
+        async def run_turn(self, turn):
+            if len(engines) == 2 and self is engines[1]:
+                raise original
+            return await super().run_turn(turn)
+
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        run_local(case_ids=('old-clue',), policy_ids=('history-recent-v1',),
+                  output_path=output)
+    assert caught.value is original
+    report = json.loads(output.read_text(encoding='utf-8'))
+    assert report['status'] == 'cancelled' and report['passed'] is False
+    assert len(report['rows']) == len(report['coverage']['completed_pairs']) == 1
+    row = report['rows'][0]
+    assert all(row['timing_status'][phase] == 'completed' for phase in
+               ('preparation', 'projection', 'generation', 'turn'))
+    assert row['timing_status']['replay'] == 'cancelled'
+    assert 'PRIVATE_SENTINEL' not in json.dumps(report)
+    monkeypatch.setattr(__main__, 'run_local', lambda **kwargs: (_ for _ in ()).throw(original))
+    assert __main__.main([]) == 130

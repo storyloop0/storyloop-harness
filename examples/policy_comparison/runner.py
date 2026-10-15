@@ -9,7 +9,7 @@ from .cases import CASES, DATASET_ID
 from .task import task
 
 REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
-                             'recent_clue', 'old_clue_expected'})
+                             'recent_clue', 'old_clue_expected', 'replay'})
 
 
 def _validate_row(row, case, policy):
