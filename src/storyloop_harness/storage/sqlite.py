@@ -11,8 +11,10 @@ from storyloop_harness.core.contracts import (
 )
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
-from storyloop_harness.core.generated_scene import (GeneratedSceneSnapshot,
-    GeneratedSceneConflict, validate_event_snapshot_reference)
+from storyloop_harness.core.generated_scene import (
+    GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneGenerationMarker,
+    GeneratedSceneSnapshot, validate_event_snapshot_reference,
+)
 
 
 def _encode(value):
@@ -63,6 +65,11 @@ class SQLiteGameStore:
                 turn_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
                 canonical_json TEXT NOT NULL, checksum TEXT NOT NULL,
                 PRIMARY KEY (game_id, turn_id));
+            CREATE TABLE IF NOT EXISTS generated_scene_generation_markers (
+                game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+                turn_id TEXT NOT NULL, marker_id TEXT NOT NULL,
+                canonical_json TEXT NOT NULL, checksum TEXT NOT NULL,
+                PRIMARY KEY (game_id, turn_id));
         ''')
 
     def close(self):
@@ -91,6 +98,30 @@ class SQLiteGameStore:
             self._db.execute('INSERT INTO games VALUES (?,?,?,?)',
                              (snapshot.game_id, snapshot.version, snapshot.tick, _encode(snapshot.data)))
             self._add_work(snapshot.game_id, initial_work)
+
+    def generated_scene_generation_marker(self, game_id, turn_id):
+        row = self._db.execute(
+            'SELECT marker_id,canonical_json,checksum FROM generated_scene_generation_markers '
+            'WHERE game_id=? AND turn_id=?', (game_id, turn_id)).fetchone()
+        if row is None:
+            return None
+        marker = GeneratedSceneGenerationMarker.from_storage(row[1], row[2])
+        if (marker.marker_id, marker.game_id, marker.turn_id) != (row[0], game_id, turn_id):
+            raise GeneratedSceneCorrupt('generated scene generation marker row identity mismatch')
+        return marker
+
+    def create_generated_scene_generation_marker(self, marker):
+        validated = GeneratedSceneGenerationMarker.from_storage(marker.canonical_json, marker.checksum)
+        if validated != marker:
+            raise GeneratedSceneCorrupt('generated scene generation marker wrapper mismatch')
+        with self._transaction():
+            self.load(validated.game_id)
+            if self.generated_scene_generation_marker(validated.game_id, validated.turn_id) is not None:
+                return False
+            self._db.execute('INSERT INTO generated_scene_generation_markers VALUES (?,?,?,?,?)',
+                             (validated.game_id, validated.turn_id, validated.marker_id,
+                              validated.canonical_json, validated.checksum))
+        return True
 
     def load(self, game_id):
         row = self._db.execute('SELECT version,tick,data FROM games WHERE game_id=?', (game_id,)).fetchone()

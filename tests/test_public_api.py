@@ -153,6 +153,8 @@ def test_generated_scene_persistence_contract_is_public():
 
     for name in ('GeneratedSceneSnapshot', 'GeneratedSceneConflict',
                  'GeneratedSceneCorrupt', 'SceneTurn',
+                 'GeneratedSceneGenerationMarker', 'GeneratedSceneGenerationMarkerStore',
+                 'GeneratedSceneUncertain',
                  'validate_event_snapshot_reference'):
         assert name in advanced.__all__
         assert getattr(advanced, name)
