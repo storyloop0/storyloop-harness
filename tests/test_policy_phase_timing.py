@@ -1,7 +1,10 @@
 """Phase boundaries and failure evidence for the policy comparison example."""
 import asyncio
+from dataclasses import replace
 import importlib
 import json
+import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,8 +95,8 @@ def test_phase_boundaries_exclude_later_evidence_work(monkeypatch):
     assert {phase: row[phase + '_seconds'] for phase in PHASES[:4]} == {
         'preparation': 5, 'projection': 3, 'generation': 11, 'turn': 23}
     assert tuple(row['timing_status'][p] for p in PHASES) == (
-        'completed', 'completed', 'completed', 'completed', 'not_started')
-    assert row['replay_seconds'] is None
+        'completed', 'completed', 'completed', 'completed', 'completed')
+    assert row['replay_seconds'] >= 0
     assert row['metadata']['timing_version'] == 'policy-phases-v1'
     assert calls['preflight'] == 1
     assert calls['projection'] >= calls['preflight']
@@ -255,7 +258,7 @@ def test_client_lookup_error_after_success_emits_failed_row():
     assert row['passed'] is False
     assert row['error'] == {'type': 'RuntimeError'}
     assert tuple(row['timing_status'][p] for p in PHASES) == (
-        'completed', 'completed', 'completed', 'completed', 'not_started')
+        'completed', 'completed', 'completed', 'completed', 'completed')
     assert 'CLIENT_LOOKUP_SENTINEL' not in json.dumps(row)
 
 
@@ -311,10 +314,11 @@ def test_late_failure_keeps_completed_phase_evidence(monkeypatch, where):
     assert caught.value is error
     assert len(captured) == 1
     row = captured[0]
+    replay_status = ('completed' if where in ('temporary', 'client') else 'not_started')
     assert tuple(row['timing_status'][p] for p in PHASES) == (
-        'completed', 'completed', 'completed', 'completed', 'not_started')
+        'completed', 'completed', 'completed', 'completed', replay_status)
     assert all(row[p + '_seconds'] is not None for p in PHASES[:4])
-    assert row['replay_seconds'] is None
+    assert (row['replay_seconds'] is None) is (replay_status == 'not_started')
     assert row['passed'] is False
     assert row['error'] == {'type': 'RuntimeError'}
     assert 'LATE_SENTINEL' not in json.dumps(row)
@@ -344,5 +348,209 @@ def test_success_returns_once_without_sending_to_sink():
     row = _run(evidence_sink=captured.append)
     assert row['passed'] is True
     assert captured == []
-    assert row['timing_status']['replay'] == 'not_started'
-    assert row['replay_seconds'] is None
+    assert row['timing_status']['replay'] == 'completed'
+    assert row['replay_seconds'] >= 0
+
+
+def test_replay_reopens_real_sqlite_after_close_and_times_only_replay(monkeypatch):
+    clock = Clock()
+    stores, paths, engines, inputs, closed = [], [], [], [], []
+    real_store, real_engine = subject.SQLiteGameStore, subject.TurnEngine
+    monkeypatch.setattr(subject, 'perf_counter', clock)
+    monkeypatch.setattr(subject, '_revision', lambda: None)
+
+    class Store(real_store):
+        def __init__(self, path):
+            if stores:
+                with pytest.raises(sqlite3.ProgrammingError):
+                    stores[0]._db.execute('SELECT 1')
+                clock.advance(2)
+            super().__init__(path)
+            stores.append(self)
+            paths.append(path)
+
+        def close(self):
+            super().close()
+            closed.append(self)
+            clock.advance(101 if self is stores[0] else 7)
+
+    class Engine(real_engine):
+        def __init__(self, store, package, model, **kwargs):
+            engines.append((store, package, model, kwargs))
+            if len(engines) == 2:
+                clock.advance(3)
+            super().__init__(store, package, model, **kwargs)
+
+        async def run_turn(self, turn):
+            inputs.append(turn)
+            if len(inputs) == 2:
+                clock.advance(5)
+            return await super().run_turn(turn)
+
+    monkeypatch.setattr(subject, 'SQLiteGameStore', Store)
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    row = _run()
+    assert row['passed'] is True
+    assert len(stores) == len(engines) == len(inputs) == 2
+    assert stores[0] is not stores[1] and paths[0] == paths[1]
+    assert [item[0] for item in engines] == stores
+    assert engines[0][1] is engines[1][1]
+    assert engines[0][3] == engines[1][3]
+    assert inputs[0] == inputs[1]
+    assert closed == stores
+    assert row['replay_seconds'] == 17
+
+
+def test_replay_forbidden_model_cannot_reach_first_delegate(monkeypatch):
+    captured, models, engines = [], [], []
+    real_engine = subject.TurnEngine
+    delegate_calls = 0
+
+    class Delegate(Fixture):
+        async def __call__(self, messages, **kwargs):
+            nonlocal delegate_calls
+            delegate_calls += 1
+            return await super().__call__(messages, **kwargs)
+
+    class Engine(real_engine):
+        def __init__(self, store, package, model, **kwargs):
+            models.append(model)
+            engines.append(self)
+            super().__init__(store, package, model, **kwargs)
+
+        async def run_turn(self, turn):
+            if len(engines) == 2 and self is engines[1]:
+                await models[1]([], injected=True)
+            return await super().run_turn(turn)
+
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    with pytest.raises(RuntimeError) as caught:
+        _run(model_factory=Delegate, evidence_sink=captured.append)
+    assert str(caught.value) == 'policy replay attempted generation'
+    assert delegate_calls == 1
+    assert len(models) == 2 and models[0] is not models[1]
+    assert len(captured) == 1
+    row = captured[0]
+    assert row['result']['window_broken'] is True
+    assert row['timing_status']['generation'] == row['timing_status']['turn'] == 'completed'
+    assert row['timing_status']['replay'] == 'failed'
+    assert row['replay']['new_calls'] == 1
+    assert row['replay_attempt_count'] == 0
+    assert row['checks']['replay'] is False and row['passed'] is False
+    assert row['error'] == {'type': 'RuntimeError'}
+
+
+@pytest.mark.parametrize('site,kind,elapsed,replay_status,closed_count', [
+    ('first_close', ValueError, None, 'not_started', 1),
+    ('reopen', ValueError, 13, 'failed', 1),
+    ('run', ValueError, 13, 'failed', 2),
+    ('run', asyncio.CancelledError, 13, 'cancelled', 2),
+    ('run', KeyboardInterrupt, 13, 'cancelled', 2),
+    ('close', ValueError, 13, 'failed', 2),
+    ('run_and_close', ValueError, 20, 'failed', 2),
+    ('comparison', ValueError, 13, 'completed', 2),
+])
+def test_replay_failure_preserves_first_result_and_primary_error(
+        monkeypatch, site, kind, elapsed, replay_status, closed_count):
+    clock, captured, stores, engines, closed = Clock(), [], [], [], []
+    original = kind('PRIVATE_SENTINEL')
+    real_store, real_engine = subject.SQLiteGameStore, subject.TurnEngine
+    monkeypatch.setattr(subject, 'perf_counter', clock)
+    monkeypatch.setattr(subject, '_revision', lambda: None)
+
+    class Store(real_store):
+        def __init__(self, path):
+            if site == 'reopen' and stores:
+                clock.advance(13)
+                raise original
+            super().__init__(path)
+            stores.append(self)
+
+        def close(self):
+            super().close()
+            closed.append(self)
+            if ((site == 'first_close' and self is stores[0])
+                    or (site in ('close', 'run_and_close') and self is stores[-1] and len(stores) == 2)):
+                clock.advance(7 if site == 'run_and_close' else 13)
+                raise (RuntimeError('CLOSE_SENTINEL') if site == 'run_and_close' else original)
+
+    class Engine(real_engine):
+        def __init__(self, *args, **kwargs):
+            engines.append(self)
+            super().__init__(*args, **kwargs)
+
+        async def run_turn(self, turn):
+            if self is engines[-1] and len(engines) == 2:
+                if site in ('run', 'run_and_close'):
+                    clock.advance(13)
+                    raise original
+                if site == 'comparison':
+                    actual = await super().run_turn(turn)
+                    clock.advance(13)
+
+                    class FailingEvents:
+                        def __len__(self):
+                            raise original
+
+                    return SimpleNamespace(events=FailingEvents(), snapshot=actual.snapshot,
+                                           narration=actual.narration, model_usage=actual.model_usage)
+            return await super().run_turn(turn)
+
+    monkeypatch.setattr(subject, 'SQLiteGameStore', Store)
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    with pytest.raises(kind) as caught:
+        _run(evidence_sink=captured.append)
+    assert caught.value is original
+    assert len(captured) == 1
+    row = captured[0]
+    assert row['result']['window_broken'] is True
+    assert row['timing_status']['preparation'] == 'completed'
+    assert row['timing_status']['projection'] == 'completed'
+    assert row['timing_status']['generation'] == 'completed'
+    assert row['timing_status']['turn'] == 'completed'
+    assert row['timing_status']['replay'] == replay_status
+    assert row['replay_seconds'] == elapsed
+    assert row['attempt_summary']['attempts'] == []
+    assert row.get('replay_attempt_count') == (None if site == 'first_close' else 0)
+    assert row['passed'] is False and row['checks']['replay'] is False
+    assert row['error'] == {'type': kind.__name__}
+    assert len(closed) == closed_count
+    assert 'SENTINEL' not in json.dumps(row)
+
+
+@pytest.mark.parametrize('component', ['events', 'version', 'state', 'narration', 'usage'])
+def test_replay_comparison_mismatch_returns_failed_row(monkeypatch, component):
+    engines = []
+    real_engine = subject.TurnEngine
+
+    class Engine(real_engine):
+        def __init__(self, *args, **kwargs):
+            engines.append(self)
+            super().__init__(*args, **kwargs)
+
+        async def run_turn(self, turn):
+            result = await super().run_turn(turn)
+            if self is not engines[-1] or len(engines) != 2:
+                return result
+            values = {'events': result.events, 'snapshot': result.snapshot,
+                      'narration': result.narration, 'model_usage': result.model_usage}
+            if component == 'events':
+                values['events'] = ('synthetic',)
+            elif component == 'version':
+                values['snapshot'] = replace(result.snapshot, version=result.snapshot.version + 1)
+            elif component == 'state':
+                values['snapshot'] = replace(result.snapshot, data={'synthetic': True})
+            elif component == 'narration':
+                values['narration'] = 'different'
+            else:
+                values['model_usage'] = ('synthetic',)
+            return SimpleNamespace(**values)
+
+    monkeypatch.setattr(subject, 'TurnEngine', Engine)
+    row = _run()
+    assert row['timing_status']['replay'] == 'completed'
+    assert row['replay_seconds'] >= 0
+    assert row['checks']['replay'] is False and row['passed'] is False
+    assert row['replay_attempt_count'] == 0
+    assert row['result']['window_broken'] is True
+    assert 'error' not in row

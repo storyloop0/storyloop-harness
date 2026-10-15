@@ -61,6 +61,15 @@ class TimedCaptureModel(CaptureModel):
             return await super().__call__(messages, **kwargs)
 
 
+class ReplayForbiddenModel:
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, messages, **kwargs):
+        self.calls += 1
+        raise RuntimeError('policy replay attempted generation')
+
+
 def _package(directory):
     manifest = json.loads((SOURCE / 'manifest.json').read_text(encoding='utf-8'))
     manifest['initial_work'] = []
@@ -126,6 +135,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
     preparation_started = perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
     evidence = {'case_id': case['id'], 'policy_id': policy.value, 'passed': False,
+                'checks': {'replay': False},
                 'provider_input_tokens': None, 'provider_output_tokens': None,
                 'attempt_summary': None, 'cost': None,
                 'cost_status': 'unknown: no pricing supplied',
@@ -231,13 +241,15 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                       'events_sha256': _hash(json.dumps([asdict(event) for event in outcome.events],
                                                        sort_keys=True, ensure_ascii=False,
                                                        separators=(',', ':')))}
+            first_calls = model.calls
             checks = {
                 'scope': scope,
                 'dispatch_match': request == projection.request,
                 'state': result['window_broken'] is True and action_outcome == 'accepted',
-                'model_calls': model.calls == 1,
+                'model_calls': first_calls == 1,
                 'recent_clue': recent_clue,
                 'old_clue_expected': old_clue == expected_old,
+                'replay': False,
             }
             report = projection.report
             evidence.update({
@@ -250,6 +262,43 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                 'estimated_total_with_reserve': report.total_tokens,
                 'result': result,
             })
+            first_store, store = store, None
+            first_store.close()
+            replay_model = ReplayForbiddenModel()
+            replay_attempts = None
+            try:
+                with collect_attempts() as replay_attempts:
+                    with _timed(evidence, 'replay'):
+                        replay_store = SQLiteGameStore(root / 'case.sqlite3')
+                        try:
+                            replay_engine = TurnEngine(replay_store, package, replay_model,
+                                                       max_responders=1, context_budget=budget,
+                                                       context_policy=policy)
+                            replay = await replay_engine.run_turn(turn)
+                        finally:
+                            active_error = sys.exc_info()[1]
+                            try:
+                                replay_store.close()
+                            except BaseException:
+                                if active_error is None:
+                                    raise
+            finally:
+                evidence['replay_attempt_count'] = (
+                    len(replay_attempts.records) if replay_attempts is not None else 0)
+                evidence['replay'] = {'new_calls': replay_model.calls}
+            evidence['replay'].update({
+                'new_events': len(replay.events),
+                'version_delta': replay.snapshot.version - outcome.snapshot.version,
+                'same_state': replay.snapshot == outcome.snapshot,
+                'same_narration': replay.narration == outcome.narration,
+                'usage_count': len(replay.model_usage),
+            })
+            r = evidence['replay']
+            checks['replay'] = (r['new_calls'] == 0 and r['new_events'] == 0
+                                and r['version_delta'] == 0 and r['same_state'] is True
+                                and r['same_narration'] is True and r['usage_count'] == 0
+                                and evidence['replay_attempt_count'] == 0)
+            evidence['passed'] = all(checks.values())
         except BaseException as error:
             if evidence['timing_status']['preparation'] == 'not_started':
                 evidence['preparation_seconds'] = perf_counter() - preparation_started
