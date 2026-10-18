@@ -7,7 +7,7 @@ import httpx2
 import pytest
 
 from model_helpers import create_test_model
-from examples.policy_comparison.pricing import PriceSnapshot
+from examples.policy_comparison.pricing import PriceSnapshot, load_pricing
 from examples.policy_comparison.runner import run_local
 from storyloop_harness.generation import GenerationBudget
 
@@ -57,14 +57,19 @@ def _reply(text="window breaks"):
 def test_native_sdk_fallback_prices_both_attempts_once_and_freezes_metadata(tmp_path):
     wire = []
     source = _data()
-    price = PriceSnapshot(source)
     file = tmp_path / "pricing.json"
     file.write_text(json.dumps(source), encoding="utf-8")
+    price = load_pricing(file)
+    original_metadata = price.to_metadata()
     source["models"]["offline-test"]["input_per_million"] = "999"
 
     def transport(request):
         wire.append(request)
         n = len(wire)
+        if n == 1:
+            file.write_text(json.dumps(source), encoding="utf-8")
+        else:
+            file.unlink()
         arguments = "invalid-json" if n == 1 else _reply()
         return httpx2.Response(200, json=_completion(arguments, {
             "prompt_tokens": 10 * n, "completion_tokens": n,
@@ -77,7 +82,8 @@ def test_native_sdk_fallback_prices_both_attempts_once_and_freezes_metadata(tmp_
     assert row["cost_status"] == "estimated"
     assert row["cost_reasons"] == row["unpriced_models"] == []
     assert row["cost_currency"] == "USD"
-    assert row["metadata"]["pricing"] == price.to_metadata()
+    assert not file.exists()
+    assert row["metadata"]["pricing"] == original_metadata
     assert row["metadata"]["pricing"]["snapshot"]["models"]["offline-test"]["input_per_million"] == "1"
     assert row["replay_attempt_count"] == row["replay"]["new_calls"] == row["replay"]["usage_count"] == 0
     assert not any(secret in json.dumps(report) for secret in
@@ -152,6 +158,45 @@ def test_preparation_failure_has_unknown_cost_and_frozen_pricing():
     assert row["cost_reasons"] == ["no_attempts"]
     assert row["metadata"]["pricing"] == _price().to_metadata()
     assert "EXCEPTION_SENTINEL" not in json.dumps(report)
+
+
+def test_first_summary_failure_keeps_complete_unknown_cost_evidence(monkeypatch):
+    from examples.policy_comparison.cases import CASES
+    from examples.policy_comparison.task import task
+    from storyloop_harness.context import ContextPolicy
+
+    subject = importlib.import_module("examples.policy_comparison.task")
+    original = RuntimeError("EXCEPTION_SENTINEL")
+    summaries = []
+    models = []
+    captured = []
+    price = _price()
+
+    def fail_summary(records):
+        summaries.append(records)
+        raise original
+
+    monkeypatch.setattr(subject, "summarize_attempt_usage", fail_summary)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(task(case=CASES[0], policy=ContextPolicy.DEFAULT,
+                         model_mode="sdk_mock", model_factory=lambda: models.append(1),
+                         evidence_sink=captured.append, pricing=price))
+    assert caught.value is original
+    assert summaries == [()]
+    assert models == []
+    assert len(captured) == 1
+    row = captured[0]
+    assert row["passed"] is False
+    assert row["error"] == {"type": "RuntimeError"}
+    assert row["timing_status"]["preparation"] == "failed"
+    assert {key: row[key] for key in
+            ("cost", "known_cost", "cost_currency", "cost_status", "cost_reasons",
+             "unpriced_models")} == {
+                 "cost": None, "known_cost": None, "cost_currency": "USD",
+                 "cost_status": "unknown", "cost_reasons": ["no_attempts"],
+                 "unpriced_models": []}
+    assert row["metadata"]["pricing"] == price.to_metadata()
+    assert "EXCEPTION_SENTINEL" not in json.dumps(row)
 
 
 def test_invalid_sdk_usage_does_not_create_a_zero_cost():

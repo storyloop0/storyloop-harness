@@ -150,12 +150,18 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
     temporary = store = delegate = None
     try:
         try:
-            initial_summary = summarize_attempt_usage(())
-            evidence['attempt_summary'] = initial_summary.to_dict()
             if pricing is not None and not isinstance(pricing, PriceSnapshot):
                 raise ValueError('invalid pricing snapshot')
-            evidence.update(cost_evidence(initial_summary, pricing))
+            evidence.update({'known_cost': None,
+                             'cost_currency': pricing.currency if pricing is not None else None,
+                             'cost_status': 'unknown' if pricing is not None else
+                                            'unknown: no pricing supplied',
+                             'cost_reasons': ['no_attempts'] if pricing is not None else ['no_pricing'],
+                             'unpriced_models': []})
             evidence['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
+            initial_summary = summarize_attempt_usage(())
+            evidence['attempt_summary'] = initial_summary.to_dict()
+            evidence.update(cost_evidence(initial_summary, pricing))
             temporary = TemporaryDirectory(prefix='storyloop-policy-')
             root = Path(temporary.name)
             package = _package(root)
