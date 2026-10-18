@@ -184,7 +184,7 @@ def test_actual_sdk_content_rejection_uses_one_send_and_retains_attempt_usage(pa
     asyncio.run(run())
 
 
-def test_source_dialogue_introduction_accepts_identity_from_same_beat():
+def test_source_dialogue_introduction_names_actor_after_its_beat():
     package = source_package()
     state = dict(package.initial_state, player_knowledge={'seen_actor_ids': [], 'named_actor_ids': []})
     package = replace(package, initial_state=state)
@@ -194,9 +194,65 @@ def test_source_dialogue_introduction_accepts_identity_from_same_beat():
         decision=dict(intent='speech', target_ids=['dockhand']),
         encounters=[dict(actor_id='dockhand', evidence='我叫Dockhand。', name_learned=True)])
     result = asyncio.run(session(store, package, FakeGenerator(plan)).run_turn('game', 'Hello', 'turn'))
-    assert result.segments[0].speaker_name == 'Dockhand'
+    assert result.segments[0].speaker_name == '一位嘉宾'
     assert result.snapshot.data['player_knowledge']['named_actor_ids'] == ['dockhand']
     assert result.narration.count('我叫Dockhand。') == 1
+
+
+@pytest.mark.parametrize('mode', ['interactive', 'novel'])
+def test_identity_labels_follow_introduction_order_and_survive_reopen(mode, tmp_path):
+    package = source_package()
+    state = dict(package.initial_state, player_knowledge={
+        'seen_actor_ids': ['vendor'], 'named_actor_ids': ['vendor']})
+    package = replace(package, initial_state=state, presentation_mode=mode)
+    plan = dict(beats=[dialogue('dockhand', 'I have an answer.'),
+                       dialogue('vendor', 'The vendor already knows you.'),
+                       dialogue('dockhand', '我叫Dockhand。'),
+                       dialogue('dockhand', 'Now I can answer.')],
+        decision=dict(intent='speech', target_ids=['dockhand', 'vendor']),
+        encounters=[dict(actor_id='dockhand', evidence='我叫Dockhand。', name_learned=True)])
+    generator = FakeGenerator(plan)
+    path = tmp_path / 'identity.db'
+    with SQLiteGameStore(path) as store:
+        package.seed_game(store, 'game')
+        result = asyncio.run(session(store, package, generator).run_turn('game', 'Hello', 'turn'))
+        saved = tuple(store.observations_for('game', 'player'))
+        saved_parts = tuple(segment_for_observation(store, 'game', obs) for obs in saved)
+        assert result.snapshot.data['player_knowledge']['named_actor_ids'] == ['dockhand', 'vendor']
+        if mode == 'interactive':
+            assert [part.speaker_name for part in saved_parts] == [
+                '一位嘉宾', 'Vendor', '一位嘉宾', 'Dockhand']
+        else:
+            assert len(saved_parts) == 1
+            assert saved_parts[0].text == ('一位嘉宾说：“I have an answer.”\n\n'
+                'Vendor说：“The vendor already knows you.”\n\n'
+                '一位嘉宾说：“我叫Dockhand。”\n\n'
+                'Dockhand说：“Now I can answer.”')
+    with SQLiteGameStore(path) as store:
+        replay = asyncio.run(session(store, package, generator).run_turn('game', 'Hello', 'turn'))
+        assert replay.narration == result.narration
+        assert tuple(store.observations_for('game', 'player')) == saved
+        assert tuple(segment_for_observation(store, 'game', obs) for obs in saved) == saved_parts
+        assert generator.calls == 1
+
+
+@pytest.mark.parametrize('mode', ['interactive', 'novel'])
+def test_cross_beat_introduction_evidence_does_not_reveal_name_early(mode):
+    package = source_package()
+    state = dict(package.initial_state, player_knowledge={
+        'seen_actor_ids': [], 'named_actor_ids': []})
+    package = replace(package, initial_state=state, presentation_mode=mode)
+    store = InMemoryGameStore()
+    package.seed_game(store, 'game')
+    plan = dict(beats=[narration('我叫'), narration('Dockhand。'),
+                       dialogue('dockhand', 'A later answer.')],
+        decision=dict(intent='speech', target_ids=['dockhand']),
+        encounters=[dict(actor_id='dockhand', evidence='我叫\n\nDockhand。', name_learned=True)])
+    result = asyncio.run(session(store, package, FakeGenerator(plan)).run_turn(
+        'game', 'Hello', 'turn'))
+    assert result.snapshot.data['player_knowledge']['named_actor_ids'] == ['dockhand']
+    assert '一位嘉宾' in result.narration
+    assert 'Dockhand说：“A later answer.”' not in result.narration
 
 
 @pytest.mark.parametrize('mode', ['interactive', 'novel'])

@@ -489,9 +489,7 @@ class SingleCallGameSession:
         visible_segments = []
         profiles = before.data.get('actor_profiles', {})
         knowledge = before.data.get('player_knowledge')
-        if isinstance(knowledge, dict) and plan.encounters:
-            knowledge = merge_knowledge(knowledge, plan.encounters)
-        named = knowledge.get('named_actor_ids', []) if isinstance(knowledge, dict) else []
+        named = set(knowledge.get('named_actor_ids', [])) if isinstance(knowledge, dict) else set()
         for beat in plan.beats:
             if beat.kind == 'narration':
                 visible_segments.append(StorySegment('scene', beat.text))
@@ -501,6 +499,11 @@ class SingleCallGameSession:
                 name = name if isinstance(name, str) else self.package.actor_names[beat.actor_id]
                 label = name if not isinstance(knowledge, dict) or beat.actor_id in named else '一位嘉宾'
                 visible_segments.append(StorySegment('dialogue', beat.text, beat.actor_id, label))
+            # An accepted introduction changes the label only after the beat
+            # containing its visible evidence. Evidence spanning beats has no
+            # unambiguous reveal point within a beat, so stays hidden this turn.
+            named.update(item.actor_id for item in plan.encounters
+                         if item.name_learned and item.evidence in beat.text)
         if self.package.presentation_mode == 'novel':
             visible_segments = [StorySegment('scene', '\n\n'.join(
                 f'{part.speaker_name}说：“{part.text}”' if part.kind == 'dialogue' else part.text
