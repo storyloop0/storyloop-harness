@@ -7,6 +7,8 @@ from storyloop_harness.context import ContextPolicy
 
 from .cases import CASES, DATASET_ID
 from .task import task
+from .pricing import PriceSnapshot, cost_evidence
+from storyloop_harness.usage import summarize_attempt_usage
 
 REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
                              'recent_clue', 'old_clue_expected', 'replay'})
@@ -44,7 +46,9 @@ def _selection(ids, available, label):
 
 
 def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
-              model_mode='fixture', model_factory=None, output_path=None):
+              model_mode='fixture', model_factory=None, output_path=None, pricing=None):
+    if pricing is not None and not isinstance(pricing, PriceSnapshot):
+        raise ValueError('invalid pricing snapshot')
     if model_mode not in ('fixture', 'live', 'sdk_mock'):
         raise ValueError('invalid model mode')
     selected_cases = _selection(case_ids, (case['id'] for case in CASES), 'case')
@@ -99,7 +103,8 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                     emitted.append(row)
                 try:
                     row = await task_fn(case=case, policy=policy, model_mode=model_mode,
-                                        model_factory=model_factory, evidence_sink=sink)
+                                        model_factory=model_factory, evidence_sink=sink,
+                                        pricing=pricing)
                     if emitted:
                         raise ValueError('task emitted a row and returned another')
                     _validate_row(row, case, policy)
@@ -118,6 +123,8 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                         rows.extend(emitted)
                     else:
                         rows.append({'case_id': case['id'], 'policy_id': policy.value,
-                                     'passed': False, 'error': {'type': type(error).__name__}})
+                                     'passed': False, 'error': {'type': type(error).__name__},
+                                     **cost_evidence(summarize_attempt_usage(()), pricing),
+                                     'metadata': {'pricing': pricing.to_metadata() if pricing is not None else None}})
         return finalize()
     return asyncio.run(run())
