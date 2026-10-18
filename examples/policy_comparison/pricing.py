@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -131,11 +132,11 @@ def load_pricing(path: str | Path) -> PriceSnapshot:
 
 def _rate_parts(rate: str) -> tuple[int, int]:
     whole, _, fraction = rate.partition(".")
-    return int(whole + fraction), len(fraction)
+    return int(Decimal(whole + fraction)), len(fraction)
 
 
 def _plain_amount(numerator: int, decimal_places: int) -> str:
-    digits = str(numerator).zfill(decimal_places + 1)
+    digits = format(Decimal(numerator), "f").zfill(decimal_places + 1)
     if decimal_places:
         return (digits[:-decimal_places] + "." + digits[-decimal_places:]).rstrip("0").rstrip(".")
     return digits

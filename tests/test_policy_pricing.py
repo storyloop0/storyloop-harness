@@ -119,6 +119,24 @@ def test_large_token_and_long_decimal_calculation_is_exact():
     assert result["cost"] == expected
 
 
+@pytest.mark.parametrize("rate", ["9" * 4301, "0." + "9" * 4301],
+                         ids=["long-whole", "long-fraction"])
+def test_schema_valid_long_rate_has_exact_cost(rate):
+    models = {"offline-test": {"input_per_million": rate,
+                               "output_per_million": "0", "cached_input_per_million": "0"}}
+    summary = summarize_attempt_usage([attempt(usage=ModelUsage(
+        "offline-test", "scene_turn", 1_000_000, 0))])
+    result = cost_evidence(summary, PriceSnapshot.from_dict(pricing_data(models)))
+    assert result["cost"] == rate
+
+
+def test_large_product_formats_without_integer_string_limit():
+    summary = summarize_attempt_usage([attempt(usage=ModelUsage(
+        "offline-test", "scene_turn", 10 ** 4307, 0))])
+    result = cost_evidence(summary, PriceSnapshot.from_dict(pricing_data()))
+    assert result["cost"] == "1" + "0" * 4301
+
+
 def test_snapshot_is_normalized_frozen_detached_and_has_stable_hash():
     source = pricing_data()
     source["models"]["offline-test"]["input_per_million"] = "0001.0000"
