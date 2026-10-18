@@ -14,7 +14,7 @@ from storyloop_harness.agents.action_advisor import ActionOption
 from storyloop_harness.core.decisions import MainDecision
 from storyloop_harness.agents.scene_turn import SingleSceneGenerator
 from storyloop_harness.context.projection import SceneContextProjector
-from storyloop_harness.agents.scene_schema import SceneTurn
+from storyloop_harness.agents.scene_schema import NarrationBeat, SceneTurn, committed_scene
 from storyloop_harness.runtime.action_resolution import resolve_action
 from storyloop_harness.core.contracts import Effect, Observation, PendingWork, Snapshot, WorldEvent
 from storyloop_harness.core.perception import physical_observations
@@ -39,7 +39,7 @@ from storyloop_harness.core.generated_scene import (
     GeneratedSceneStale, GeneratedSceneCorrupt, GeneratedSceneWriteFailure,
     GeneratedSceneConflict,
     content_hash, text_hash, package_fingerprint, snapshot_state_fingerprint, logical_value,
-    validate_event_snapshot_reference,
+    validate_event_snapshot_reference, GENERATION_CONTRACT_VERSION,
 )
 
 
@@ -101,9 +101,14 @@ class SingleCallGameSession:
     def _check_snapshot(self, record: GeneratedSceneSnapshot, before: Snapshot,
                         input_hash: str, max_tick: int | None, *, committed: bool = False) -> None:
         body = record.metadata()
+        legacy = body['generation_contract_version'] != GENERATION_CONTRACT_VERSION
+        if legacy and not committed:
+            raise GeneratedSceneMismatch('legacy generated scene cannot be committed')
         expected = self._bindings(before, input_hash, max_tick)
         for key, value in expected.items():
             if committed and key in ('base_version', 'base_tick', 'base_state_hash'):
+                continue
+            if legacy and committed and key in ('system_prompt_hash', 'output_schema_hash'):
                 continue
             if body[key] != value:
                 if key in ('base_version', 'base_tick', 'base_state_hash'):
@@ -187,7 +192,7 @@ class SingleCallGameSession:
                             or text_hash(saved['text']) != input_hash
                             or not isinstance(saved.get('single_call'), dict)):
                         raise ValueError('turn ID already belongs to another action')
-                    SceneTurn.model_validate(saved['single_call'])
+                    committed_scene(saved['single_call'])
                 else:
                     self._inspect_uncertain_generation(before, turn_id, input_hash, max_tick)
             return None
@@ -224,7 +229,7 @@ class SingleCallGameSession:
                             "speech": speech, "speaker_id": actor_id,
                             "speaker_name": player_label})
         observations: list[Observation] = []
-        if self.package.presentation_mode == "interactive":
+        if self.package.presentation_mode == "interactive" and not work.payload.get('visible_committed'):
             observations.append(Observation(f"{event.event_id}:player-heard", event.event_id,
                                             "player", "dialogue", f"【{player_label}】\n{speech}", snapshot.tick))
         if not work.payload.get("private", False):
@@ -278,7 +283,7 @@ class SingleCallGameSession:
             if saved is not None:
                 if saved.get("text") != player_text or not isinstance(saved.get("single_call"), dict):
                     raise ValueError("turn ID already belongs to another action")
-                plan = SceneTurn.model_validate(saved["single_call"])
+                plan = committed_scene(saved["single_call"])
             else:
                 record = inspection.snapshot if inspection is not None else None
                 if record is not None:
@@ -348,7 +353,14 @@ class SingleCallGameSession:
 
     def _validate_plan(self, before: Snapshot, plan: SceneTurn,
                        focus: tuple[str, ...], nearby: tuple[str, ...]) -> SceneTurn:
+        # Custom generators and model_copy/model_construct callers must cross the
+        # same validation boundary before any snapshot or event is persisted.
+        plan = SceneTurn.model_validate(plan.model_dump())
         plan = resolve_action(before, self.package, plan)
+        if plan.decision.intent == 'inspect' and not plan.story_first and plan.decision.entry_id:
+            entry = self.package.worldbook.get(plan.decision.entry_id, 'player')
+            if entry is not None:
+                plan = plan.model_copy(update={'beats': [NarrationBeat(kind='narration', text=entry.text)]})
         # Reject impossible numeric proposals before persisting their prose.
         status_effects(self.package.status_fields, before,
                        [change.model_dump() for change in plan.status_changes])
@@ -364,19 +376,15 @@ class SingleCallGameSession:
                     self.package.actor_names.get(actor_id, ""))
         targets = list(dict.fromkeys(actor_id for actor_id in decision.target_ids
                                      if actor_id in allowed))[:len(allowed)]
-        replies = []
-        for item in plan.replies:
-            if (item.actor_id in allowed and item.actor_id not in {reply.actor_id for reply in replies}
-                    and item.speech.strip()):
-                replies.append(item)
+        replies = plan.replies
         if decision.intent in {"speech", "action"} and not targets:
-            targets = [item.actor_id for item in replies]
+            targets = list(dict.fromkeys(item.actor_id for item in replies))
         if decision.intent == "action" or (decision.intent == "speech" and decision.channel == "speech"):
             targets = [actor_id for actor_id in targets if actor_id in nearby]
-        replies = [item for item in replies if item.actor_id in targets]
         if decision.channel == "private_message" and len(targets) > 1:
             targets = targets[:1]
-            replies = [item for item in replies if item.actor_id in targets]
+        if any(item.actor_id not in allowed or item.actor_id not in targets for item in replies):
+            raise ValueError('dialogue actor is not authorized for this turn')
         decision = decision.model_copy(update={"target_ids": targets})
         milestones = []
         if self.package.story_blueprint is not None:
@@ -389,8 +397,6 @@ class SingleCallGameSession:
             milestones = [item for item in dict.fromkeys(plan.milestones_fulfilled)
                           if item in active]
         prose = plan.prose.strip()
-        if not prose:
-            prose = "你停下来，留意眼前的变化。"
         encounters = (accepted_encounters(
             plan.encounters, prose,
             {actor_id: actor_name(actor_id) for actor_id in allowed},
@@ -403,8 +409,7 @@ class SingleCallGameSession:
         for item in plan.memories:
             visibly_present = (
                 actor_name(item.actor_id) in prose
-                or (self.package.presentation_mode == "interactive"
-                    and any(reply.actor_id == item.actor_id for reply in replies))
+                or any(reply.actor_id == item.actor_id for reply in replies)
             ) if item.actor_id in participants else False
             if visibly_present and item.actor_id not in {
                 prior.actor_id for prior in memories
@@ -412,8 +417,7 @@ class SingleCallGameSession:
                 memories.append(item.model_copy(update={"fact": item.fact.strip()[:180]}))
             if len(memories) == (len(allowed) if self.package.story_blueprint else 2):
                 break
-        return plan.model_copy(update={"decision": decision, "replies": replies,
-                                       "prose": prose, "memories": memories,
+        return plan.model_copy(update={"decision": decision, "memories": memories,
                                        "encounters": encounters,
                                        "milestones_fulfilled": milestones})
 
@@ -441,7 +445,6 @@ class SingleCallGameSession:
             details['generated_scene_snapshot_id'] = generated_scene.snapshot_id
             details['generated_scene_snapshot_checksum'] = generated_scene.checksum
         effects: tuple[Effect, ...] = ()
-        prose = plan.prose
         if decision.intent == "action":
             accepted = plan.action.status == "occurred"
             if accepted and decision.action_id is not None:
@@ -460,8 +463,6 @@ class SingleCallGameSession:
                      if decision.entry_id else None)
             if entry is not None:
                 details["entry_id"] = entry.entry_id
-                if not plan.story_first:
-                    prose = entry.text
         if self.package.story_blueprint is not None and plan.milestones_fulfilled:
             effects += tuple(Effect(("story_progress", "completed", milestone_id), True)
                              for milestone_id in plan.milestones_fulfilled)
@@ -482,9 +483,35 @@ class SingleCallGameSession:
                                       "action": "player_action" if plan.action.status == "occurred"
                                       else "action_rejected"}[decision.intent],
                            "player", None, tick, effects, details)
-        observations: list[Observation] = [
-            Observation(f"{event_id}:scene", event_id, "player", "scene", prose, tick),
-        ]
+        # Player observations are written in beat order atomically. Pending NPC
+        # work owns history/overhearing only, so resume cannot append or reorder
+        # the already visible dialogue. Metadata is indexed per observation.
+        visible_segments = []
+        profiles = before.data.get('actor_profiles', {})
+        knowledge = before.data.get('player_knowledge')
+        if isinstance(knowledge, dict) and plan.encounters:
+            knowledge = merge_knowledge(knowledge, plan.encounters)
+        named = knowledge.get('named_actor_ids', []) if isinstance(knowledge, dict) else []
+        for beat in plan.beats:
+            if beat.kind == 'narration':
+                visible_segments.append(StorySegment('scene', beat.text))
+            else:
+                profile = profiles.get(beat.actor_id, {}) if isinstance(profiles, dict) else {}
+                name = profile.get('name') if isinstance(profile, dict) else None
+                name = name if isinstance(name, str) else self.package.actor_names[beat.actor_id]
+                label = name if not isinstance(knowledge, dict) or beat.actor_id in named else '一位嘉宾'
+                visible_segments.append(StorySegment('dialogue', beat.text, beat.actor_id, label))
+        if self.package.presentation_mode == 'novel':
+            visible_segments = [StorySegment('scene', '\n\n'.join(
+                f'{part.speaker_name}说：“{part.text}”' if part.kind == 'dialogue' else part.text
+                for part in visible_segments))]
+        observations: list[Observation] = []
+        details['visible_beats'] = {}
+        for index, part in enumerate(visible_segments):
+            observation_id = f'{event_id}:beat:{index}'
+            observations.append(Observation(observation_id, event_id, 'player',
+                part.kind, part.body_text, tick))
+            details['visible_beats'][observation_id] = part.to_dict()
         campaign = before.data.get("campaign")
         day = (campaign.get("day") if isinstance(campaign, dict) else
                tick // self.clock.ticks_per_day + 1
@@ -510,14 +537,20 @@ class SingleCallGameSession:
               and details.get("sensory")):
             observations.extend(item for item in physical_observations(before, event)
                                 if item.recipient_id != "player")
-        pending = tuple(PendingWork(
-            f"{event_id}:reply:{reply.actor_id}", "single_npc_reply", tick, 10, event_id,
-            {"actor_id": reply.actor_id, "speech": reply.speech.strip(),
-             "player_message": player_text if decision.intent == "speech" else "",
-             "private": decision.channel == "private_message"},
-        ) for reply in plan.replies)
+        pending = []
+        counts = {}
+        for index, reply in enumerate(plan.replies):
+            count = counts.get(reply.actor_id, 0)
+            counts[reply.actor_id] = count + 1
+            suffix = f':{count}' if count else ''
+            pending.append(PendingWork(
+                f'{event_id}:reply:{reply.actor_id}{suffix}', 'single_npc_reply', tick,
+                10 - index, event_id,
+                {'actor_id': reply.actor_id, 'speech': reply.speech,
+                 'player_message': player_text if decision.intent == 'speech' else '',
+                 'private': decision.channel == 'private_message', 'visible_committed': True}))
         return self.store.commit(before.game_id, before.version, event,
-                                 tuple(observations), pending)
+                                 tuple(observations), tuple(pending))
 
     def proposed_options(self, game_id: str, turn_id: str,
                          authored: tuple[ActionOption, ...] = ()) -> tuple[ActionOption, ...]:

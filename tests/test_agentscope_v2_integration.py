@@ -31,7 +31,7 @@ async def _run_single_call_structured_reply():
             "role": "assistant", "content": None, "tool_calls": [{
                 "id": "structured-1", "type": "function", "function": {
                     "name": "generate_structured_output",
-                    "arguments": '{"prose":"你听见船靠岸。"}',
+                    "arguments": '{"beats":[{"kind":"narration","text":"你听见船靠岸。"}]}',
                 },
             }],
         }}],

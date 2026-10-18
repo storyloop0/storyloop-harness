@@ -60,7 +60,7 @@ def test_plain_narrative_keeps_status_and_exposes_only_visible_declared_fields(w
         "id": "pressure", "label": "压力", "value": 3, "min": 0, "max": 10,
         "max_delta": 2, "description": "压力越大越紧张",
     }]
-    plan = NarrativeTurn.model_validate({"prose": "你感到压力增加。",
+    plan = NarrativeTurn.model_validate({"beats": [{"kind": "narration", "text": "你感到压力增加。"}],
                                          "status_changes": [{"id": "pressure", "delta": 1}]}).for_storage()
     assert [item.model_dump() for item in plan.status_changes] == [{"id": "pressure", "delta": 1}]
 
@@ -73,7 +73,7 @@ def test_plain_narrative_keeps_status_and_exposes_only_visible_declared_fields(w
 ])
 def test_malformed_status_cannot_silently_be_discarded(model, changes):
     with pytest.raises(ValueError):
-        model.model_validate({"prose": "你感到压力增加。", "status_changes": changes})
+        model.model_validate({"beats": [{"kind": "narration", "text": "你感到压力增加。"}], "status_changes": changes})
 
 
 @pytest.mark.parametrize("sample, expected", [("", 0), ("hello world", 11), ("你好世界", 6)])

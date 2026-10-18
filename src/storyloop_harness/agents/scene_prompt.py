@@ -5,18 +5,13 @@ def serialize_scene_request(request: dict[str, object]) -> str:
     return json.dumps(request, ensure_ascii=False)
 
 def scene_system_prompt(package) -> str:
-    if package.presentation_mode == "interactive":
-        dialogue = (
-            "interactive 模式：prose 只写环境、动作和反应，角色实际发言写进 replies；"
-            "prose 不引用或转述同一回答，也不要换句话重复角色说出的信息。"
-            "每位说话角色分别给出 actor_id，使角色记住自己的发言。"
-        )
-    else:
-        dialogue = (
-            "novel 模式：用第二人称在 prose 中写出完整对白；"
-            "replies 仅用于角色记忆，要把正文对白逐一摘录并使用对应 actor_id，"
-            "不得在 replies 增加正文没有的发言。"
-        )
+    dialogue = (
+        f"{package.presentation_mode} 模式：用有序 beats 写出完整场景；"
+        "narration 片段写环境、动作和反应，dialogue 片段使用 actor_id 和 text 写实际发言。"
+        "每条对白只写一次，narration 不引用或转述同一回答，也不要换句话重复角色说出的信息。"
+        "叙述和对白可以交错，同一角色可以多次说话；显示与角色记忆都从这份序列派生。"
+        "只给出 beats，不填写旧 prose/replies 字段。"
+    )
     system = (
         "你是互动故事的叙述者。优先回应 player_action 的完整意思，写出自然、具体的故事正文；"
         "用人物动作、场景声响、外貌细节和没有说破的反应呈现性格与关系变化，"
@@ -38,9 +33,9 @@ def scene_system_prompt(package) -> str:
         "不能编造观察、传闻、路线或时间表，再用它们证明答案。"
         "推测必须明确标为推测，不能写成已确认事实、已成功行动或决定性建议。"
         "允许不决定答案的氛围、动作和语气，但不能据此虚构决定答案的事实。"
-        "不确定性在 prose、replies、witnessed、memories 和 options 中都应保持；"
+        "不确定性在 beats、witnessed、memories 和 options 中都应保持；"
         "没有实际发生的查证不能记作完成，不能把角色私有经历或玩家历史当作所有人的经历。"
-        "只让当前相关的少数角色回应。按当前模式分别填写正文与角色发言；"
+        "只让当前相关的少数角色回应。使用同一份有序 beats；"
         "其余结构化字段记录行动和上下文："
         "participants 是本轮实际参与的角色 ID；interaction 中寒暄或说话用 speech，"
         "查看用 inspect，实际做事用 action。查看已声明条目可给 entry_id；"
@@ -75,7 +70,7 @@ def scene_system_prompt(package) -> str:
                    "依据 player_identity_knowledge 区分玩家见过谁、知道谁的姓名；"
                    "初见陌生人时先写可见形貌、行动与礼貌接触，经过自我介绍、他人明确介绍或本人随身标识后，"
                    "才在玩家视角将其姓名与人对应。桌上名牌只说明名字存在，不能据此给陌生人安上姓名。"
-                   "本轮确实见到人物时，在 encounters 中给出 actor_id 和 prose 中的原文证据短句；"
+                   "本轮确实见到人物时，在 encounters 中给出 actor_id 和 beats 中的原文证据短句；"
                    "只有正文明确让玩家把姓名与本人对应，name_learned 才为 true。"
                    "每回合输出三个紧接本轮结尾的不同后续行动选项。输出 SourceNarrativeTurn。")
     else:

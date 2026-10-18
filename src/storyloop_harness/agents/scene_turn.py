@@ -1,4 +1,4 @@
-"""Story-first generation with a small, optional persistence sidecar."""
+"""Single-source scene generation with optional action and context metadata."""
 
 from __future__ import annotations
 
@@ -52,12 +52,6 @@ class SingleSceneGenerator:
             response = await self.model(prompt, structured_model=schema,
                 context_budget=context.budget, max_completion_tokens=context.budget.output_tokens)
             result = schema.model_validate(response.metadata)
-            result = result.model_copy(update={
-                "prose": result.prose.replace("\\r\\n", "\n").replace("\\n", "\n").strip(),
-                "replies": [item.model_copy(update={
-                    "speech": item.speech.replace("\\r\\n", "\n").replace("\\n", "\n").strip(),
-                }) for item in result.replies],
-            })
             span.metric("story.single_scene_model_calls", 1.0)
             if self.telemetry.capture_content:
                 span.update(output=result.model_dump())

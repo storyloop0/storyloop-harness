@@ -71,7 +71,7 @@ def assert_one_npc_delivery(store, request):
     assert len([entry for entry in store.agent_context_entries(request.game_id, 'dockhand')
                 if entry.entry_id == event_id]) == 1
     assert len([item for item in store.observations_for(request.game_id, 'player')
-                if item.event_id == event_id]) == 1
+                if item.event_id == f'{request.turn_id}:input' and item.channel == 'dialogue']) == 1
     assert not any(work.work_id == f'{request.turn_id}:input:reply:dockhand'
                    for work in store.pending_work(request.game_id))
 

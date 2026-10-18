@@ -393,7 +393,7 @@ def test_expanded_schema_and_preflight_cover_two_scene_shapes():
         packages = (ScenarioPackage.load(Path(__file__).resolve().parents[1] / 'examples' / 'freeform'),
                     source_package())
         for package in packages:
-            arguments = {'prose': 'Synthetic harbor scene.'}
+            arguments = {'beats': [{'kind': 'narration', 'text': 'Synthetic harbor scene.'}]}
             if package.story_blueprint is not None:
                 arguments['options'] = [{'label': str(i), 'input': str(i)} for i in range(3)]
 

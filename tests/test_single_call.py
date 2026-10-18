@@ -85,6 +85,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         unseen = FakeGenerator(a_turn(
             decision={"intent": "action", "target_ids": ["dockhand"]},
             prose="你独自走到岸边，放下随身的包。",
+            replies=[],
             action={"status": "occurred", "player_result": "你放下了包",
                     "sensory": "玩家放下随身的包", "effects": []},
             memories=[{"actor_id": "dockhand", "fact": "码头工夸奖了玩家的包。"}],
@@ -108,7 +109,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.segments[1].speaker_id, "dockhand")
         self.assertEqual(generator.calls, 1)
 
-    async def test_source_scene_does_not_commit_unprojected_reply_or_shared_memory(self):
+    async def test_source_scene_rejects_unprojected_reply_before_any_commit(self):
         from scene_fixtures import source_package
 
         package = source_package()
@@ -125,15 +126,14 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         session = SingleCallGameSession(self.store, package, generator,
                                          SceneContextProjector(self.store, package))
 
-        outcome = await session.run_turn("group", "Hello everyone", "turn-group")
-
-        self.assertEqual([part.speaker_id for part in outcome.segments if part.kind == "dialogue"],
-                         ["dockhand"])
+        with self.assertRaisesRegex(ValueError, 'authorized'):
+            await session.run_turn("group", "Hello everyone", "turn-group")
+        self.assertEqual(self.store.player_inputs_for('group'), [])
         self.assertFalse(self.store.event_exists("group", "turn-group:input:reply:guide:spoken"))
         self.assertFalse(any(item.channel == "shared_experience"
                              for item in self.store.observations_for("group", "guide")))
-        self.assertTrue(any(item.channel == "shared_experience"
-                            for item in self.store.observations_for("group", "dockhand")))
+        self.assertFalse(any(item.channel == "shared_experience"
+                             for item in self.store.observations_for("group", "dockhand")))
 
     async def test_actor_contexts_stay_separate_and_room_speech_is_observed(self):
         state = deepcopy(self.package.initial_state)
@@ -241,7 +241,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
                 self.calls += 1
                 self.schema = structured_model
                 return SimpleNamespace(metadata={
-                    "prose": "你和码头工做完饭，又坐下来吃了晚餐。",
+                    "beats": [{"kind": "narration", "text": "你和码头工做完饭，又坐下来吃了晚餐。"}],
                     "participants": ["dockhand"],
                     "interaction": "action",
                     "action": {"status": "occurred"},
@@ -270,8 +270,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.schema.__name__, "NarrativeTurn")
         self.assertEqual(model.calls, 1)
-        self.assertEqual(set(model.schema.model_fields) - {"prose"},
-                         {"replies", "options", "memories", "participants",
+        self.assertEqual(set(model.schema.model_fields) - {"beats"},
+                         {"options", "memories", "participants",
                           "interaction", "duration", "delivery", "witnessed", "status_changes",
                           "action_id", "entry_id", "action"})
         self.assertEqual(turn.prose, "你和码头工做完饭，又坐下来吃了晚餐。")
@@ -376,7 +376,7 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([work.work_id for work in self.store.pending_work("game")],
                          ["harbor-opening-cue"])
         deliveries = [item for item in self.store.observations_for("game", "player")
-                      if item.event_id == "same-turn:input:reply:dockhand:spoken"]
+                      if item.event_id == "same-turn:input" and "今天有船靠岸" in item.content]
         self.assertEqual(len(deliveries), 1)
 
     async def test_failed_commit_leaves_character_history_unchanged_until_retry(self):

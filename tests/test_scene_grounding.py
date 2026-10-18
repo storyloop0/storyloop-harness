@@ -30,7 +30,7 @@ class CaptureModel:
     async def __call__(self, messages, **kwargs):
         self.messages, self.kwargs = messages, kwargs
         return SimpleNamespace(metadata={
-            "prose": "码头工放下缆绳。",
+            "beats": [{"kind": "narration", "text": "码头工放下缆绳。"}],
             "options": [
                 {"label": "看看码头", "input": "我看看码头。"},
                 {"label": "询问工人", "input": "我询问工人。"},
@@ -61,19 +61,19 @@ def test_scene_generation_sends_mode_specific_grounding_and_budget(source, mode)
     assert "提问本身" in system and "职业" in system and "常识" in system
     assert "编造观察" in system and "传闻" in system
     assert "不知道" in system and "推测" in system
-    assert all(field in system for field in ("prose", "replies", "witnessed", "memories", "options"))
+    assert all(field in system for field in ("beats", "witnessed", "memories", "options"))
     assert "npc_contexts" in system and "自己的经历" in system
     assert "每段描写至少要揭示新事实" not in system
     assert "其他字段仅供保存上下文" not in system
     if mode == "interactive":
         assert "interactive 模式" in system and "novel 模式" not in system
         assert "不引用或转述同一回答" in system
-        assert "实际发言写进 replies" in system
+        assert "有序 beats" in system
         assert "正文对白逐一摘录" not in system
     else:
         assert "novel 模式" in system and "interactive 模式" not in system
-        assert "完整对白" in system and "仅用于角色记忆" in system
-        assert "正文对白逐一摘录" in system
+        assert "完整场景" in system and "角色记忆" in system
+        assert "正文对白逐一摘录" not in system
     assert system.endswith("输出 SourceNarrativeTurn。" if source else "输出 NarrativeTurn。")
     if source:
         assert "player_identity_knowledge" in system
@@ -115,8 +115,7 @@ def test_sqlite_replay_keeps_two_identical_speakers_distinct(mode, tmp_path):
     package = replace(source_package(), story_blueprint=None, presentation_mode=mode)
     path = tmp_path / "scene.db"
     speech = "风向还没有确认。"
-    prose = ("码头工和摊主放下手里的活。" if mode == "interactive" else
-             f"码头工说：{speech}摊主也说：{speech}")
+    prose = "码头工和摊主放下手里的活。"
     turn = a_turn(
         decision={"intent": "speech", "target_ids": ["dockhand", "vendor"],
                   "audience": "room"},

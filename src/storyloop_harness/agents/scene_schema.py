@@ -1,6 +1,7 @@
 """Structured ordinary scene output and persistence schemas."""
 from typing import Literal
-from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator
+import unicodedata
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 from storyloop_harness.core.decisions import MainDecision
 from storyloop_harness.runtime.player_knowledge import PlayerEncounter
 
@@ -36,7 +37,8 @@ class SharedMoment(BaseModel):
     fact: str = Field(min_length=1)
 
 
-class SceneTurn(BaseModel):
+class LegacySceneTurn(BaseModel):
+    """Read-only schema for already committed pre-beats events. Never generation input."""
     decision: MainDecision
     prose: str = Field(min_length=1)
     replies: list[SceneReply] = Field(default_factory=list)
@@ -49,11 +51,96 @@ class SceneTurn(BaseModel):
     encounters: list[PlayerEncounter] = Field(default_factory=list)
 
 
-class NarrativeTurn(BaseModel):
-    """Only prose is required; the sidecar helps save actor-scoped context."""
+class NarrationBeat(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['narration']
+    text: StrictStr = Field(min_length=1)
 
-    prose: str = Field(min_length=1)
-    replies: list[SceneReply] = Field(default_factory=list)
+    @field_validator('text')
+    @classmethod
+    def normalized_text(cls, value):
+        value = value.replace('\\r\\n', '\n').replace('\\n', '\n').replace('\\r', '\n').strip()
+        if not value:
+            raise ValueError('beat text must not be blank')
+        return value
+
+
+class DialogueBeat(NarrationBeat):
+    kind: Literal['dialogue']
+    actor_id: StrictStr = Field(min_length=1)
+
+    @field_validator('actor_id')
+    @classmethod
+    def nonblank_actor(cls, value):
+        if not value.strip() or value != value.strip():
+            raise ValueError('dialogue actor_id must be nonblank and unpadded')
+        return value
+
+
+# Literal kinds and forbidden extra fields distinguish the alternatives without
+# discriminator mappings, which retain dangling $defs references after SDK expansion.
+SceneBeat = NarrationBeat | DialogueBeat
+
+
+class SceneContent(BaseModel):
+    """Ordered content; narration and dialogue text each have one authoritative source."""
+    beats: list[SceneBeat] = Field(min_length=1, strict=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def reject_old_content(cls, value):
+        if isinstance(value, dict) and {'prose', 'replies'} & value.keys():
+            raise ValueError('prose/replies are obsolete; supply ordered beats')
+        return value
+
+    @model_validator(mode='after')
+    def reject_full_answer_repetition(self):
+        # Bounded lexical check, not semantic review: NFKC + casefold, keeping
+        # only Unicode letters/numbers. A complete dialogue of >= 8 such
+        # characters repeated in any one narration beat is rejected. Dialogue
+        # beats are never compared to one another (different speakers may agree).
+        def normalized(text):
+            return ''.join(c for c in unicodedata.normalize('NFKC', text).casefold()
+                           if c.isalnum())
+        narrations = [normalized(b.text) for b in self.beats if b.kind == 'narration']
+        for beat in self.beats:
+            if beat.kind == 'dialogue':
+                text = normalized(beat.text)
+                if len(text) >= 8 and any(text in item for item in narrations):
+                    raise ValueError('narration repeats a complete dialogue answer')
+        return self
+
+    @property
+    def prose(self) -> str:
+        """Derived text for evidence matching; not a separately stored content field."""
+        return '\n\n'.join(beat.text for beat in self.beats)
+
+    @property
+    def replies(self) -> list[SceneReply]:
+        return [SceneReply(actor_id=beat.actor_id, speech=beat.text)
+                for beat in self.beats if beat.kind == 'dialogue']
+
+
+class SceneTurn(SceneContent):
+    decision: MainDecision
+    action: ProposedAction = Field(default_factory=ProposedAction)
+    status_changes: list[ProposedStatusChange] = Field(default_factory=list)
+    options: list[ProposedNextAction] = Field(default_factory=list)
+    memories: list[SharedMoment] = Field(default_factory=list)
+    story_first: bool = False
+    milestones_fulfilled: list[str] = Field(default_factory=list)
+    encounters: list[PlayerEncounter] = Field(default_factory=list)
+
+
+def committed_scene(value: dict) -> SceneTurn | LegacySceneTurn:
+    """Explicit historical event reader. New/custom generation uses SceneTurn only."""
+    return (SceneTurn.model_validate(value) if 'beats' in value
+            else LegacySceneTurn.model_validate(value))
+
+
+class NarrativeTurn(SceneContent):
+    """Required ordered beats supply all visible narration and character speech."""
+
     options: list[ProposedNextAction] = Field(default_factory=list)
     memories: list[SharedMoment] = Field(default_factory=list)
     status_changes: list[ProposedStatusChange] = Field(default_factory=list)
@@ -66,12 +153,12 @@ class NarrativeTurn(BaseModel):
     delivery: Literal["targets", "room", "private_message"] = "targets"
     witnessed: str = ""
 
-    @field_validator("replies", "options", "memories", mode="before")
+    @field_validator("options", "memories", mode="before")
     @classmethod
     def valid_items(cls, value: object, info) -> list[BaseModel]:
         if not isinstance(value, list):
             return []
-        model = {"replies": SceneReply, "options": ProposedNextAction,
+        model = {"options": ProposedNextAction,
                  "memories": SharedMoment}[info.field_name]
         valid = []
         for item in value:
@@ -115,7 +202,7 @@ class NarrativeTurn(BaseModel):
                 channel="private_message" if self.delivery == "private_message" else "speech",
                 audience="room" if self.delivery == "room" else "targets",
             ),
-            prose=self.prose, replies=self.replies,
+            beats=self.beats,
             options=self.options, memories=self.memories,
             status_changes=self.status_changes,
             action=self.action or ProposedAction(sensory=self.witnessed),

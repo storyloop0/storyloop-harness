@@ -21,6 +21,11 @@ class StructuredModel:
                             action={'status': 'occurred', 'sensory': 'SUCCESS noise'},
                             status_changes=[{'id': 'pressure', 'delta': 1}])
         self.payload.update(changes)
+        prose = self.payload.pop('prose')
+        replies = self.payload.pop('replies')
+        self.payload['beats'] = [{'kind': 'narration', 'text': prose}] + [
+            {'kind': 'dialogue', 'actor_id': item['actor_id'], 'text': item['speech']}
+            for item in replies]
 
     async def __call__(self, messages, **kwargs):
         self.calls += 1
@@ -67,7 +72,7 @@ def test_known_action_uses_authored_result_when_model_prose_contradicts_state():
     result = run(store, package, model)
     assert result.snapshot.data['world']['shop_window']['broken'] is True
     assert result.narration == package.action_rules['break_shop_window'].sensory
-    assert 'untouched' not in store.event_details('game', 'one:action')['single_call']['prose']
+    assert 'untouched' not in store.event_details('game', 'one:action')['single_call']['beats'][0]['text']
 
 
 @pytest.mark.parametrize('value', [{'items': [1, None]}, ['one', {'two': True}], None, 1.5])
@@ -123,7 +128,8 @@ def test_public_rejected_action_discards_success_and_sidecars(reason):
     assert result.snapshot.data == before.data
     assert result.processed_work_ids == ()
     saved = store.event_details('game', 'one:action')['single_call']
-    for key in ('replies', 'memories', 'status_changes', 'milestones_fulfilled', 'encounters', 'options'):
+    assert all(beat['kind'] == 'narration' for beat in saved['beats'])
+    for key in ('memories', 'status_changes', 'milestones_fulfilled', 'encounters', 'options'):
         assert saved[key] == []
 
 
@@ -211,9 +217,9 @@ def test_public_status_rejects_hidden_or_conditional_ineligible_field(mode):
 
 def test_inspection_id_and_action_metadata_survive_storage():
     from storyloop_harness.agents.scene_schema import NarrativeTurn
-    plan = NarrativeTurn(prose='look', interaction='inspect', entry_id='notice').for_storage()
+    plan = NarrativeTurn(beats=[{'kind': 'narration', 'text': 'look'}], interaction='inspect', entry_id='notice').for_storage()
     assert plan.decision.entry_id == 'notice'
-    action = NarrativeTurn(prose='act', interaction='action', action_id='break_shop_window',
+    action = NarrativeTurn(beats=[{'kind': 'narration', 'text': 'act'}], interaction='action', action_id='break_shop_window',
         action={'status': 'occurred', 'player_result': 'done', 'sensory': 'noise'}).for_storage()
     assert action.decision.action_id == 'break_shop_window'
     assert action.action.player_result == 'done'
