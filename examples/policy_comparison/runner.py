@@ -5,24 +5,28 @@ import re
 
 from storyloop_harness.context import ContextPolicy
 
-from .cases import CASES, DATASET_ID
+from .cases import suite_data
 from .task import task
 from .pricing import PriceSnapshot, cost_evidence
 from storyloop_harness.usage import summarize_attempt_usage
 
 REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
                              'recent_clue', 'old_clue_expected', 'replay'})
+NARRATIVE_REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'model_calls',
+    'recent_clue', 'old_clue_expected', 'replay', 'speech_intent', 'dockhand_target',
+    'protected_world'})
 
 
-def _validate_row(row, case, policy):
+def _validate_row(row, case, policy, suite='contracts'):
     if not isinstance(row, dict) or row.get('case_id') != case['id'] or row.get('policy_id') != policy.value:
         raise ValueError('policy task returned a mismatched row')
     checks = row.get('checks')
     result = row.get('result')
-    if (not isinstance(checks, dict) or not REQUIRED_CHECKS.issubset(checks)
-            or any(type(checks[name]) is not bool for name in REQUIRED_CHECKS)
+    required = NARRATIVE_REQUIRED_CHECKS if suite == 'narrative' else REQUIRED_CHECKS
+    if (not isinstance(checks, dict) or not required.issubset(checks)
+            or any(type(checks[name]) is not bool for name in required)
             or type(row.get('passed')) is not bool
-            or row['passed'] is not all(checks[name] for name in REQUIRED_CHECKS)
+            or row['passed'] is not all(checks[name] for name in required)
             or not isinstance(result, dict)
             or not {'window_broken', 'action_outcome', 'state_version_delta',
                     'state_sha256', 'events_sha256'}.issubset(result)
@@ -33,6 +37,18 @@ def _validate_row(row, case, policy):
                    or re.fullmatch(r'[0-9a-f]{64}', result[name]) is None
                    for name in ('state_sha256', 'events_sha256'))):
         raise ValueError('policy task returned an incomplete or inconsistent row')
+    if suite == 'narrative' and (
+            not {'interaction', 'target_ids', 'world_unchanged', 'world_sha256'}.issubset(result)
+            or result['interaction'] not in ('speech', 'inspect', 'action')
+            or not isinstance(result['target_ids'], list)
+            or any(not isinstance(actor, str) for actor in result['target_ids'])
+            or type(result['world_unchanged']) is not bool
+            or not isinstance(result['world_sha256'], str)
+            or re.fullmatch(r'[0-9a-f]{64}', result['world_sha256']) is None
+            or checks['speech_intent'] is not (result['interaction'] == 'speech')
+            or checks['dockhand_target'] is not (result['target_ids'] == ['dockhand'])
+            or checks['protected_world'] is not result['world_unchanged']):
+        raise ValueError('policy task returned an incomplete or inconsistent narrative row')
 
 
 def _selection(ids, available, label):
@@ -46,17 +62,19 @@ def _selection(ids, available, label):
 
 
 def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
-              model_mode='fixture', model_factory=None, output_path=None, pricing=None):
+              model_mode='fixture', model_factory=None, output_path=None, pricing=None,
+              suite='contracts'):
+    dataset_id, cases = suite_data(suite)
     if pricing is not None and not isinstance(pricing, PriceSnapshot):
         raise ValueError('invalid pricing snapshot')
     if model_mode not in ('fixture', 'live', 'sdk_mock'):
         raise ValueError('invalid model mode')
-    selected_cases = _selection(case_ids, (case['id'] for case in CASES), 'case')
+    selected_cases = _selection(case_ids, (case['id'] for case in cases), 'case')
     selected_policies = _selection(policy_ids, (policy.value for policy in ContextPolicy), 'policy')
     if model_mode == 'live' and (len(selected_cases) != 1 or len(selected_policies) != 1
                                  or case_ids is None or policy_ids is None):
         raise ValueError('live mode requires one explicit case and policy')
-    all_pairs = [(case['id'], policy.value) for case in CASES for policy in ContextPolicy]
+    all_pairs = [(case['id'], policy.value) for case in cases for policy in ContextPolicy]
     expected = [pair for pair in all_pairs if pair[0] in selected_cases and pair[1] in selected_policies]
 
     async def run():
@@ -73,18 +91,25 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                         'full_matrix_selected': len(expected) == len(all_pairs)}
             if not cancelled and not complete:
                 raise ValueError('policy task omitted or duplicated a selected row')
-            for case in CASES:
+            for case in cases:
                 group = [row for row in rows if row['case_id'] == case['id'] and 'result' in row]
                 selected_group = [pair for pair in expected if pair[0] == case['id']]
                 evaluate = model_mode == 'fixture' and len(selected_group) == len(ContextPolicy) and len(group) == len(ContextPolicy)
-                consistent = (len({(row['result']['window_broken'], row['result']['action_outcome'],
-                                    row['result']['state_version_delta'], row['result']['state_sha256'],
-                                    row['result']['events_sha256']) for row in group}) == 1) if evaluate else None
+                if evaluate and suite == 'narrative':
+                    consistent = len({(row['result']['window_broken'],
+                                       row['result']['action_outcome'],
+                                       row['result']['world_sha256']) for row in group}) == 1
+                elif evaluate:
+                    consistent = len({(row['result']['window_broken'], row['result']['action_outcome'],
+                                       row['result']['state_version_delta'], row['result']['state_sha256'],
+                                       row['result']['events_sha256']) for row in group}) == 1
+                else:
+                    consistent = None
                 for row in group:
                     row['checks']['same_authoritative_result'] = consistent
                     if evaluate:
                         row['passed'] = row['passed'] and consistent
-            report = {'dataset_id': DATASET_ID, 'status': 'cancelled' if cancelled else status,
+            report = {'dataset_id': dataset_id, 'status': 'cancelled' if cancelled else status,
                       'passed': not cancelled and complete and all(row['passed'] for row in rows),
                       'coverage': coverage, 'rows': rows}
             if output_path is not None:
@@ -92,7 +117,7 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                 Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
             return report
 
-        for case in CASES:
+        for case in cases:
             for policy in ContextPolicy:
                 if (case['id'], policy.value) not in expected:
                     continue
@@ -102,12 +127,15 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                         raise ValueError('duplicate task evidence')
                     emitted.append(row)
                 try:
-                    row = await task_fn(case=case, policy=policy, model_mode=model_mode,
-                                        model_factory=model_factory, evidence_sink=sink,
-                                        pricing=pricing)
+                    kwargs = {'case': case, 'policy': policy, 'model_mode': model_mode,
+                              'model_factory': model_factory, 'evidence_sink': sink,
+                              'pricing': pricing}
+                    if suite == 'narrative':
+                        kwargs['suite'] = suite
+                    row = await task_fn(**kwargs)
                     if emitted:
                         raise ValueError('task emitted a row and returned another')
-                    _validate_row(row, case, policy)
+                    _validate_row(row, case, policy, suite)
                     rows.append(row)
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     if emitted:

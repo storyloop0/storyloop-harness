@@ -23,7 +23,8 @@ from storyloop_harness.storage import SQLiteGameStore
 from storyloop_harness.generation import GenerationBudget
 from storyloop_harness.usage import collect_attempts, summarize_attempt_usage
 
-from .cases import CASES, DATASET_ID
+from .cases import suite_data
+from .narrative import NarrativeFixture, seed_narrative_history
 from .pricing import PriceSnapshot, cost_evidence
 
 SOURCE = Path(__file__).resolve().parents[1] / 'freeform'
@@ -132,7 +133,8 @@ def _revision():
 
 
 async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_factory=None,
-               evidence_sink=None, pricing=None):
+               evidence_sink=None, pricing=None, suite='contracts'):
+    dataset_id, suite_cases = suite_data(suite)
     preparation_started = perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
     evidence = {'case_id': case['id'], 'policy_id': policy.value, 'passed': False,
@@ -144,7 +146,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                 'generation_seconds': None, 'turn_seconds': None, 'replay_seconds': None,
                 'timing_status': {phase: 'not_started' for phase in
                                   ('preparation', 'projection', 'generation', 'turn', 'replay')},
-                'metadata': {'dataset_id': DATASET_ID, 'model_mode': model_mode,
+                'metadata': {'dataset_id': dataset_id, 'model_mode': model_mode,
                              'policy_id': policy.value, 'started_at': started_at,
                              'timing_version': 'policy-phases-v1'}}
     temporary = store = delegate = None
@@ -169,7 +171,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
             if model_factory is not None:
                 delegate = model_factory()
             elif model_mode == 'fixture':
-                delegate = Fixture()
+                delegate = NarrativeFixture() if suite == 'narrative' else Fixture()
             elif model_mode == 'live':
                 from examples.persistent_story import live_model
                 delegate = live_model(generation_budget=GenerationBudget(3, 90))
@@ -178,7 +180,9 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
             model = TimedCaptureModel(delegate, evidence)
             generation_budget = getattr(delegate, 'generation_budget', None)
             metadata = evidence['metadata']
-            metadata.update({'model': getattr(delegate, 'model', 'narrative-fixture-v1' if model_mode == 'fixture' else None),
+            fixture_model = ('narrative-speech-fixture-v1' if suite == 'narrative'
+                             else 'narrative-fixture-v1')
+            metadata.update({'model': getattr(delegate, 'model', fixture_model if model_mode == 'fixture' else None),
                              'stream': getattr(delegate, 'stream', None),
                              'tool_choice_policy': getattr(delegate, 'tool_choice_policy', None),
                              'structured_output_transport': getattr(delegate, 'structured_output_transport', None),
@@ -189,12 +193,13 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                              'openai_version': version('openai'), 'httpx_version': version('httpx'),
                              'git_revision': _revision(),
                              'case_sha256': _hash(json.dumps(case, sort_keys=True, ensure_ascii=False)),
-                             'dataset_sha256': _hash(json.dumps(CASES, sort_keys=True, ensure_ascii=False))})
+                             'dataset_sha256': _hash(json.dumps(suite_cases, sort_keys=True, ensure_ascii=False))})
             if model_mode == 'fixture':
-                metadata.update({'fixture_id': 'narrative-fixture-v1', 'fixture_version': '1'})
+                metadata.update({'fixture_id': 'narrative-speech-fixture-v1' if suite == 'narrative'
+                                 else 'narrative-fixture-v1', 'fixture_version': '1'})
             evidence['metadata'] = metadata
             store = SQLiteGameStore(root / 'case.sqlite3')
-            _seed(store, package)
+            (seed_narrative_history if suite == 'narrative' else _seed)(store, package)
             turn = TurnInput('case', case['player_text'], 'policy-turn', package.version)
             engine = TurnEngine(store, package, model, max_responders=1,
                                 context_budget=budget, context_policy=policy)
@@ -236,7 +241,8 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
             recent_clue = 'sailmarker824' in context_text
             old_clue = 'brasskey731' in context_text
             expected_old = (policy is ContextPolicy.SUMMARY or policy is ContextPolicy.DEFAULT
-                            or (policy is ContextPolicy.RELEVANT and case['id'] == 'old-clue'))
+                            or (policy is ContextPolicy.RELEVANT and case['id'] in
+                                ('old-clue', 'dialogue-old-clue')))
             encoded = json.dumps(request, ensure_ascii=False)
             player_fields = {key: value for key, value in request.items() if key != 'npc_contexts'}
             scope = ('FOREIGN_GAME' not in encoded and 'UNSELECTED_PRIVATE' not in encoded
@@ -247,23 +253,36 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
             action_outcome = next((event.details['outcome'] for event in outcome.events
                                    if 'outcome' in event.details), None)
             result = {'window_broken': outcome.snapshot.data['world']['shop_window']['broken'],
-                      'action_outcome': action_outcome,
+                      'action_outcome': (action_outcome if suite == 'contracts' or action_outcome is not None
+                                         else 'not_applicable'),
                       'state_version_delta': outcome.snapshot.version - before.version,
                       'state_sha256': _hash(json.dumps(outcome.snapshot.data, sort_keys=True,
                                                       ensure_ascii=False, separators=(',', ':'))),
                       'events_sha256': _hash(json.dumps([asdict(event) for event in outcome.events],
                                                        sort_keys=True, ensure_ascii=False,
                                                        separators=(',', ':')))}
+            if suite == 'narrative':
+                result.update({'interaction': outcome.decision.intent,
+                               'target_ids': list(outcome.decision.target_ids),
+                               'world_unchanged': outcome.snapshot.data['world'] == before.data['world'],
+                               'world_sha256': _hash(json.dumps(outcome.snapshot.data['world'],
+                                                   sort_keys=True, ensure_ascii=False,
+                                                   separators=(',', ':')))})
             first_calls = model.calls
             checks = {
                 'scope': scope,
                 'dispatch_match': request == projection.request,
-                'state': result['window_broken'] is True and action_outcome == 'accepted',
                 'model_calls': first_calls == 1,
                 'recent_clue': recent_clue,
                 'old_clue_expected': old_clue == expected_old,
                 'replay': False,
             }
+            if suite == 'narrative':
+                checks.update({'speech_intent': result['interaction'] == 'speech',
+                               'dockhand_target': result['target_ids'] == ['dockhand'],
+                               'protected_world': result['world_unchanged']})
+            else:
+                checks['state'] = result['window_broken'] is True and action_outcome == 'accepted'
             report = projection.report
             evidence.update({
                 'case_id': case['id'], 'policy_id': policy.value,
