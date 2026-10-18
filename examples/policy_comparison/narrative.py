@@ -51,7 +51,7 @@ def seed_narrative_history(store, package):
 
 
 class NarrativeFixture:
-    """Answer only from the actual selected player history and summary."""
+    """Recollect selected player clues without assigning them to the dockhand."""
     async def __call__(self, messages, **kwargs):
         content = messages[-1]['content']
         if isinstance(content, list):
@@ -60,17 +60,18 @@ class NarrativeFixture:
         materials = [json.dumps(item, ensure_ascii=False) for item in request['player_history']]
         materials.append(json.dumps(request['player_summary'], ensure_ascii=False))
         player_action = request.get('player_action', request.get('player_input', ''))
+        recollection = ''
         if 'brasskey731' in player_action and any(OLD_FACT in item for item in materials):
-            speech = '那把黄铜钥匙要交给守灯人阿禾。'
+            recollection = '你记得那把黄铜钥匙要交给守灯人阿禾。'
         elif 'sailmarker824' in player_action and any(RECENT_FACT in item for item in materials):
-            speech = '蓝帆船停在东侧栈桥。'
-        elif 'coastweather999' in player_action:
+            recollection = '你记得蓝帆船停在东侧栈桥。'
+        if 'coastweather999' in player_action:
             speech = '今夜海上的风向尚未确认，需要再查证。'
         else:
             speech = '现有线索不足，我不能确定答案。'
-        prose = ('码头工停下手里的活，回应你的问题。'
+        prose = (recollection + '码头工停下手里的活，回应你的问题。'
                  if request.get('presentation_mode', 'novel') == 'interactive'
-                 else f'码头工说：{speech}')
+                 else f'{recollection}码头工说：{speech}')
         usage = SimpleNamespace(input_tokens=0, output_tokens=0)
         record_model_usage('narrative-speech-fixture-v1', 'scene_turn', usage)
         return SimpleNamespace(metadata={'prose': prose, 'interaction': 'speech',

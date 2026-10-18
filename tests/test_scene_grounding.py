@@ -81,13 +81,17 @@ def test_scene_generation_sends_mode_specific_grounding_and_budget(source, mode)
 
 @pytest.mark.parametrize("mode", ["interactive", "novel"])
 @pytest.mark.parametrize("known", [False, True])
-def test_narrative_fixture_places_speech_by_mode_and_material(mode, known):
+@pytest.mark.parametrize("material,question,clue", [
+    ("黄铜钥匙 brasskey731 交给守灯人阿禾", "brasskey731 黄铜钥匙交给谁？", "守灯人阿禾"),
+    ("蓝帆船 sailmarker824 停在东侧栈桥", "sailmarker824 蓝帆船停在哪边？", "东侧栈桥"),
+])
+def test_narrative_fixture_keeps_player_recollection_out_of_dockhand_reply(
+        mode, known, material, question, clue):
     import json
     from examples.policy_comparison.narrative import NarrativeFixture
 
-    material = "黄铜钥匙 brasskey731 交给守灯人阿禾" if known else ""
-    request = {"player_history": [], "player_summary": material, "presentation_mode": mode,
-               "player_input": "brasskey731 黄铜钥匙交给谁？"}
+    request = {"player_history": [], "player_summary": material if known else "",
+               "presentation_mode": mode, "player_input": question}
     response = asyncio.run(NarrativeFixture()([
         {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
     ]))
@@ -95,13 +99,15 @@ def test_narrative_fixture_places_speech_by_mode_and_material(mode, known):
     speech = result["replies"][0]["speech"]
     assert result["participants"] == ["dockhand"]
     assert result["replies"] == [{"actor_id": "dockhand", "speech": speech}]
-    assert ("守灯人阿禾" in speech) is known
-    assert ("线索不足" in speech) is not known
+    assert clue not in speech
+    assert "线索不足" in speech
+    assert ("你记得" in result["prose"] and clue in result["prose"]) is known
     if mode == "interactive":
-        assert result["prose"] == "码头工停下手里的活，回应你的问题。"
+        assert "码头工停下手里的活" in result["prose"]
         assert speech not in result["prose"]
     else:
-        assert result["prose"] == f"码头工说：{speech}"
+        assert result["prose"].count(speech) == 1
+        assert result["prose"].endswith(f"码头工说：{speech}")
 
 
 @pytest.mark.parametrize("mode", ["interactive", "novel"])

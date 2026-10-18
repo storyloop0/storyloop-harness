@@ -62,13 +62,17 @@ def test_narrative_case_definitions_and_fixture_use_selected_material_only():
     assert '守灯人阿禾' not in old['prose'] and '线索不足' in old['prose']
     selected_old = asyncio.run(reply([], '黄铜钥匙 brasskey731 交给守灯人阿禾',
                                      NARRATIVE_CASES[0]['player_text']))
-    assert '守灯人阿禾' in selected_old['prose']
+    assert '你记得' in selected_old['prose'] and '守灯人阿禾' in selected_old['prose']
+    assert '守灯人阿禾' not in selected_old['replies'][0]['speech']
+    assert '线索不足' in selected_old['replies'][0]['speech']
     split_old = asyncio.run(reply([{'text': '黄铜钥匙 brasskey731'},
                                    {'text': '守灯人阿禾'}], '', NARRATIVE_CASES[0]['player_text']))
     assert '守灯人阿禾' not in split_old['prose']
     recent = asyncio.run(reply([{'text': '蓝帆船 sailmarker824 停在东侧栈桥'}], '',
                                NARRATIVE_CASES[1]['player_text']))
-    assert '东侧栈桥' in recent['prose']
+    assert '你记得' in recent['prose'] and '东侧栈桥' in recent['prose']
+    assert '东侧栈桥' not in recent['replies'][0]['speech']
+    assert '线索不足' in recent['replies'][0]['speech']
     unknown = asyncio.run(reply([], '', NARRATIVE_CASES[2]['player_text']))
     assert '风向' in unknown['prose'] and ('未' in unknown['prose'] or '不' in unknown['prose'])
 

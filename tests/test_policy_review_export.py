@@ -172,7 +172,8 @@ def test_cleanup_failure_keeps_first_text_and_original_error(
     assert report['passed'] is False
     assert report['rows'][0]['error'] == {'type': expected_error}
     assert item['error'] == report['rows'][0]['error']
-    assert item['narration'] == '码头工说：现有线索不足，我不能确定答案。'
+    assert item['narration'] == ('码头工停下手里的活，回应你的问题。\n\n'
+                                 '【码头工】\n现有线索不足，我不能确定答案。')
     assert item['narration_sha256'] == sha256(item['narration'].encode('utf-8')).hexdigest()
     assert item['passed'] is False and item['status'] == 'unreviewed'
     assert len(temporary_paths) == 1
