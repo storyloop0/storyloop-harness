@@ -133,6 +133,24 @@ def test_narrative_seed_reaches_selected_request_without_reference_injection():
         assert '第0条玩家可见历史：' not in encoded
         assert '依据可见旧线索回答' not in encoded
         assert 'FOREIGN_GAME' not in encoded and 'UNSELECTED_PRIVATE' not in encoded
+        if policy_id == 'history-summary-v1':
+            assert request['player_summary'] == fact
+            assert request['npc_contexts'][0]['own_summary'] == ''
+            assert 'dockhand:16' not in report['rows'][0]['source_ids']['selected']
+
+
+def test_narrative_checkpoint_sources_match_player_observations(tmp_path):
+    from examples.policy_comparison.narrative import OLD_FACT, seed_narrative_history
+    from examples.policy_comparison.task import _package
+    from storyloop_harness.core.contracts import AgentContextCheckpoint
+    from storyloop_harness.testing import InMemoryGameStore
+
+    store = InMemoryGameStore()
+    seed_narrative_history(store, _package(tmp_path))
+    player_checkpoint = store.agent_context_checkpoint('case', 'player')
+    assert player_checkpoint.summary == OLD_FACT
+    assert player_checkpoint.source_ids == tuple(f'player-{index}' for index in range(16))
+    assert store.agent_context_checkpoint('case', 'dockhand') == AgentContextCheckpoint()
 
 
 def test_narrative_action_output_fails_contract():

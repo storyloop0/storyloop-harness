@@ -44,11 +44,10 @@ def seed_narrative_history(store, package):
                         'UNSELECTED_PRIVATE', index),
         )
         store.commit('case', store.load('case').version, event, observations, ())
-    for owner in ('player', 'dockhand'):
-        source_ids = tuple(f'{owner}-{index}' for index in range(16))
-        store.save_agent_context_checkpoint('case', owner, -1,
-            AgentContextCheckpoint(16, OLD_FACT,
-                                   package.package_id, package.version, source_ids))
+    source_ids = tuple(f'player-{index}' for index in range(16))
+    store.save_agent_context_checkpoint('case', 'player', -1,
+        AgentContextCheckpoint(16, OLD_FACT,
+                               package.package_id, package.version, source_ids))
 
 
 class NarrativeFixture:
