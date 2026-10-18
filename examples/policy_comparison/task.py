@@ -133,7 +133,7 @@ def _revision():
 
 
 async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_factory=None,
-               evidence_sink=None, pricing=None, suite='contracts'):
+               evidence_sink=None, pricing=None, suite='contracts', review_sink=None):
     dataset_id, suite_cases = suite_data(suite)
     preparation_started = perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
@@ -150,6 +150,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                              'policy_id': policy.value, 'started_at': started_at,
                              'timing_version': 'policy-phases-v1'}}
     temporary = store = delegate = None
+    review_capture_error = None
     try:
         try:
             if pricing is not None and not isinstance(pricing, PriceSnapshot):
@@ -221,6 +222,11 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                 try:
                     with _timed(evidence, 'turn'):
                         outcome = await engine.run_turn(turn)
+                    if review_sink is not None:
+                        try:
+                            review_sink({'narration': outcome.narration})
+                        except Exception:
+                            review_capture_error = ValueError('could not capture review output')
                 finally:
                     active_error = sys.exc_info()[1]
                     try:
@@ -331,6 +337,8 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                                 and r['same_narration'] is True and r['usage_count'] == 0
                                 and evidence['replay_attempt_count'] == 0)
             evidence['passed'] = all(checks.values())
+            if review_capture_error is not None:
+                raise review_capture_error
         except BaseException as error:
             if evidence['timing_status']['preparation'] == 'not_started':
                 evidence['preparation_seconds'] = perf_counter() - preparation_started

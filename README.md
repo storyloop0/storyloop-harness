@@ -232,13 +232,19 @@ python -m examples.evaluation --output result.json
 python -m examples.policy_comparison --output policy-comparison.json
 python -m examples.policy_comparison --case old-clue --policy history-recent-v1 --output selected-comparison.json
 python -m examples.policy_comparison --pricing synthetic-pricing.json --case old-clue --policy history-recent-v1 --output priced-comparison.json
+python -m examples.policy_comparison --suite narrative --output narrative-metrics.json
+python -m examples.policy_comparison --suite narrative --review-output review.json --output metrics.json
 # 可选的原生 Langfuse 执行器（SDK 4.17.0）：
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
 ```
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
-- 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；fixture 没有报告服务商 Token，即使传入价格，费用也为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+- 默认 `contracts` 策略对照使用三个固定作者动作案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态。接受的作者动作采用作者定义的规范叙述，不能用来比较模型写出的文案。独立的 `narrative` 组使用三个自由对话案例 × 四种策略，验证真正玩家可见的 speech；不同策略的叙述及事件哈希不必相同。两个组的自动通过仅表示运行时契约满足。fixture 没有报告服务商 Token，即使传入价格，费用也为 `null`。结果不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+
+  `--review-output review.json` 仅对 `narrative` 组显式导出本地正文。普通指标报告默认不含玩家输入、参考事实、叙述和评分。评阅包包含首次回合最终玩家可见叙述、各案例公开合成参考事实，以及选中范围、契约、Token、费用和耗时的安全证据。`run_id` 与指标报告及每行一致；`narration_sha256` 对准确的 UTF-8 叙述计算哈希。准备失败时叙述为 `null`、状态为 `not_available`；随后重放或清理失败时保留首次叙述并标出失败检查。文件可能含玩家或故事正文，包括模型生成内容，分享前请自行检查。上述选项均不启用付费调用；只有另加 `--live` 并明确选一个案例和策略才调用服务商。
+
+  每项初始 `status: unreviewed`、评阅人为空，事实依据、回应玩家意图、表达连贯性三维分数均为 `null`。每维 0 表示不满足、1 表示部分满足、2 表示满足；请填写 `evidence_note` 中的短引文或理由及 `reviewer`。事实依据核对公开参考事实和信息不足时的表达；回应意图看是否回答玩家问题；连贯性看最终对话是否清楚一致。`null` 表示未评阅，不能当作 0。工具不导入、平均、排序评分，不做自动评审或上传。覆盖率区分选中、完成与排除组合；只比较选中组合，未知费用保持未知。此 fixture 不宣称叙事质量改善。
 
   可选的 `--pricing` 读取本地 JSON 费率快照，仅估算实际报告的尝试用量；它本身不会启用付费调用。以下数值是**合成费率，仅供测试，不是供应商报价**：
 

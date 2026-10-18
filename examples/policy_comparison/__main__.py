@@ -12,6 +12,8 @@ from .pricing import load_pricing
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, help='Also save the JSON report locally')
+    parser.add_argument('--review-output', type=Path,
+                        help='Export local narrative text for manual review')
     parser.add_argument('--suite', choices=('contracts', 'narrative'), default='contracts')
     parser.add_argument('--case', action='append', dest='cases', help='Case ID; repeat to select several offline')
     parser.add_argument('--policy', action='append', dest='policies', help='Policy ID; repeat to select several offline')
@@ -25,7 +27,7 @@ def main(argv=None):
         pricing = load_pricing(args.pricing) if args.pricing is not None else None
         report = run_local(suite=args.suite, case_ids=args.cases, policy_ids=args.policies,
                            model_mode='live' if args.live else 'fixture', output_path=args.output,
-                           pricing=pricing)
+                           review_output_path=args.review_output, pricing=pricing)
     except (asyncio.CancelledError, KeyboardInterrupt):
         return 130
     except ValueError as error:
