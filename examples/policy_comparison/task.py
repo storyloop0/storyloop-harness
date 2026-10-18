@@ -24,6 +24,7 @@ from storyloop_harness.generation import GenerationBudget
 from storyloop_harness.usage import collect_attempts, summarize_attempt_usage
 
 from .cases import CASES, DATASET_ID
+from .pricing import PriceSnapshot, cost_evidence
 
 SOURCE = Path(__file__).resolve().parents[1] / 'freeform'
 REPO = Path(__file__).resolve().parents[2]
@@ -131,7 +132,7 @@ def _revision():
 
 
 async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_factory=None,
-               evidence_sink=None):
+               evidence_sink=None, pricing=None):
     preparation_started = perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
     evidence = {'case_id': case['id'], 'policy_id': policy.value, 'passed': False,
@@ -149,7 +150,18 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
     temporary = store = delegate = None
     try:
         try:
-            evidence['attempt_summary'] = summarize_attempt_usage(()).to_dict()
+            if pricing is not None and not isinstance(pricing, PriceSnapshot):
+                raise ValueError('invalid pricing snapshot')
+            evidence.update({'known_cost': None,
+                             'cost_currency': pricing.currency if pricing is not None else None,
+                             'cost_status': 'unknown' if pricing is not None else
+                                            'unknown: no pricing supplied',
+                             'cost_reasons': ['no_attempts'] if pricing is not None else ['no_pricing'],
+                             'unpriced_models': []})
+            evidence['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
+            initial_summary = summarize_attempt_usage(())
+            evidence['attempt_summary'] = initial_summary.to_dict()
+            evidence.update(cost_evidence(initial_summary, pricing))
             temporary = TemporaryDirectory(prefix='storyloop-policy-')
             root = Path(temporary.name)
             package = _package(root)
@@ -211,6 +223,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                         evidence['attempt_summary'] = summary.to_dict()
                         evidence['provider_input_tokens'] = summary.known_input_tokens
                         evidence['provider_output_tokens'] = summary.known_output_tokens
+                        evidence.update(cost_evidence(summary, pricing))
                     except BaseException:
                         if active_error is None:
                             raise

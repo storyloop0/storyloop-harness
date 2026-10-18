@@ -70,14 +70,14 @@ def test_task_failure_and_missing_row_make_runner_and_cli_fail(monkeypatch, caps
     assert report['passed'] is False
     assert len(report['rows']) == 12
     assert all(row['error']['type'] == 'RuntimeError' for row in report['rows'])
-    async def malformed_task(*, case, policy, model_mode, model_factory, evidence_sink):
+    async def malformed_task(*, case, policy, model_mode, model_factory, evidence_sink, pricing):
         return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
                 'checks': {'scope': False}}
     malformed = run_local(task_fn=malformed_task)
     assert malformed['passed'] is False
     assert len(malformed['rows']) == 12
     assert all(row['error']['type'] == 'ValueError' for row in malformed['rows'])
-    async def unhashable_task(*, case, policy, model_mode, model_factory, evidence_sink):
+    async def unhashable_task(*, case, policy, model_mode, model_factory, evidence_sink, pricing):
         return {'case_id': case['id'], 'policy_id': policy.value, 'passed': True,
                 'checks': {name: True for name in ('scope', 'dispatch_match', 'state',
                                                    'model_calls', 'recent_clue', 'old_clue_expected',
@@ -120,7 +120,7 @@ def test_runner_requires_exact_boolean_replay_check(mutation, expected_error):
     from examples.policy_comparison.runner import run_local
     baseline = run_local(case_ids=('old-clue',), policy_ids=('history-recent-v1',))['rows'][0]
 
-    async def altered(*, case, policy, model_mode, model_factory, evidence_sink):
+    async def altered(*, case, policy, model_mode, model_factory, evidence_sink, pricing):
         row = deepcopy(baseline)
         row['checks'].pop('same_authoritative_result', None)
         if mutation == 'missing':

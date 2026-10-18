@@ -231,18 +231,31 @@ SQLite 保存角色与剧本身份、覆盖版本和本次来源 ID；原始事�
 python -m examples.evaluation --output result.json
 python -m examples.policy_comparison --output policy-comparison.json
 python -m examples.policy_comparison --case old-clue --policy history-recent-v1 --output selected-comparison.json
+python -m examples.policy_comparison --pricing synthetic-pricing.json --case old-clue --policy history-recent-v1 --output priced-comparison.json
 # 可选的原生 Langfuse 执行器（SDK 4.17.0）：
 python -m pip install -e '.[evaluation]'
 python -m examples.evaluation --langfuse --output result.json
 ```
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
-- 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；真实服务商 Token 与成本为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+- 策略对照使用三个固定线索案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态；fixture 没有报告服务商 Token，即使传入价格，费用也为 `null`。结果只验证离线结构性取舍，不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+
+  可选的 `--pricing` 读取本地 JSON 费率快照，仅估算实际报告的尝试用量；它本身不会启用付费调用。以下数值是**合成费率，仅供测试，不是供应商报价**：
+
+  ```json
+  {"schema_version":1,"pricing_id":"synthetic-example","as_of":"2026-10-18","currency":"USD","models":{"offline-test":{"input_per_million":"1","output_per_million":"2","cached_input_per_million":"0.5"}}}
+  ```
+
+  `schema_version` 必须为 1；`pricing_id` 是非空标识，`as_of` 是 `YYYY-MM-DD` 日期，`currency` 是三个大写字母；`models` 用尝试记录中的模型名称精确匹配，不使用别名。三个每百万 Token 费率都必须是非负有限的普通十进制字符串，可为 `"0"`。输入 Token 已包含缓存输入，估算式为 `((input_tokens - cached_input_tokens) × input_per_million + cached_input_tokens × cached_input_per_million + output_tokens × output_per_million) / 1000000`；适配器未收到缓存信息时沿用现有的缓存数为 0 约定。金额为精确十进制字符串，不做汇率、积分、倍率、税费或分币舍入。
+
+  每行 `known_cost` 汇总已报告且有价格的首次执行尝试用量，包括完整失败、取消与回退尝试；`cost` 仅在用量完整且所有已报告模型都有价格时给出，否则为 `null`。明确报告的零 Token 或零费率可以产生 `"0"`；无已报告且已定价的用量是 `null`，不能当作零。`cost_currency` 来自快照；`cost_status` 为 `estimated`、`unknown`，或无费率时原有的 `unknown: no pricing supplied`；`cost_reasons` 使用 `no_pricing`、`no_attempts`、`missing_usage`、`invalid_usage`、`incomplete_stream`、`unpriced_model`；`unpriced_models` 为排序去重的模型名。缺价不改变行为检查 `passed`。重放不会重复计费。
+
+  `metadata.pricing` 保存规范化的完整快照及其规范 JSON 的 SHA-256 哈希，同一次运行的费率在模型构造前冻结，文件后续变化不影响结果。快照内容在报告中可见，请只填写可以公开的价格信息。费用只是本实验捕获的报告 Token 估算，不是供应商账单或硬预算上限；报告不汇总矩阵总费用，也不据此排列策略质量。
 
   报告列出 `preparation_seconds`、`projection_seconds`、`generation_seconds`、`turn_seconds` 和 `replay_seconds`；`metadata.timing_version` 为 `policy-phases-v1`。准备阶段从 task 进入、创建临时存储之前开始，到首次回合调用之前结束，包含构造、历史、元数据和单独测量的预检投影。生成耗时覆盖被 await 的适配器调用，含请求捕获、重试/回退与流消费，属于回合耗时；回合计时在尝试汇总、结果检查和存储关闭之前结束。原存储关闭后开始重放计时，包含重开同一 SQLite、构造新 engine、同输入重放和关闭存储；比较在计时之外。这些单调时钟秒数有嵌套，不能相加；不是供应商纯推理、首 Token 延迟、进程启动或总任务耗时，报告写盘、临时目录删除和模型客户端关闭不包含在内。
 
   `timing_status` 按阶段记录 `not_started`、`completed`、`failed` 或 `cancelled`。未启动耗时为 `null`；已启动阶段失败或取消时保留经过时间。后续取证或清理失败使整行失败，但不改写已完成状态。重放使用独立且禁止生成的模型，必需检查确认没有新调用、事件、尝试、用量或版本增长，且状态和叙述相同。首次生成用量保持独立。fixture 的供应商用量和成本仍未知，耗时不能证明质量或价格改善。
-- 策略对照可用 `--case`、`--policy` 选择子集；报告区分选中、完成和排除的组合。加 `--live` 时必须明确选一个案例和策略，每次生成采用 3 次/90 秒限制，记录成功、失败或取消的已知尝试用量；成本仍为 `null`。取消保存部分证据后以 130 退出，未完成组合不算完成。当前真实调用入口仅经离线 SDK transport 验证。
+- 策略对照可用 `--case`、`--policy` 选择子集；报告区分选中、完成和排除的组合。加 `--live` 时必须明确选一个案例和策略，每次生成采用 3 次/90 秒限制，记录成功、失败或取消的已知尝试用量；提供匹配费率时可估算费用。取消保存部分证据后以 130 退出，未完成组合不算完成。当前真实调用入口仅经离线 SDK transport 验证。
 - `--langfuse` 通过[原生实验执行器](https://langfuse.com/docs/evaluation/experiments/experiments-via-sdk)写入追踪/评分；需设置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`，可选 `LANGFUSE_BASE_URL`。服务端接收状态标为未确认。
 - `--live` 调用真实模型并产生费用；需设置 `STORY_MODEL_API_KEY`、`STORY_MODEL_NAME`、`STORY_MODEL_BASE_URL`。Fixture 验证运行时契约，不代表叙事质量或共享模型上下文中的角色秘密隔离。小规模预算对照可修改任务中的默认 `ContextBudget`。
 

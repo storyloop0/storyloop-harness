@@ -180,7 +180,7 @@ def test_cancellation_preserves_partial_report_and_original_identity(tmp_path):
     original = asyncio.CancelledError('CANCEL_SENTINEL')
     output = tmp_path / 'partial.json'
 
-    async def cancelled(*, case, policy, model_mode, model_factory, evidence_sink):
+    async def cancelled(*, case, policy, model_mode, model_factory, evidence_sink, pricing):
         evidence_sink({'case_id': case['id'], 'policy_id': policy.value,
                        'passed': False, 'error': {'type': 'CancelledError'},
                        'attempt_summary': {'attempts': []}, 'cost': None})
@@ -206,7 +206,7 @@ def test_cancellation_without_task_evidence_leaves_pair_incomplete(tmp_path):
     original = asyncio.CancelledError('CANCEL_SENTINEL')
     output = tmp_path / 'partial.json'
 
-    async def cancelled(*, case, policy, model_mode, model_factory, evidence_sink):
+    async def cancelled(*, case, policy, model_mode, model_factory, evidence_sink, pricing):
         raise original
 
     with pytest.raises(asyncio.CancelledError) as caught:
