@@ -2,6 +2,7 @@
 import asyncio
 from hashlib import sha256
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,24 +24,34 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
     class CapturingEngine(real_engine):
         async def run_turn(self, turn):
             outcome = await super().run_turn(turn)
-            outcomes.append(outcome.narration)
+            outcomes.append(outcome)
             return outcome
 
     class Model:
+        def __init__(self, prose):
+            self.prose = prose
+
         async def __call__(self, messages, **kwargs):
-            return SimpleNamespace(metadata={'prose': first, 'interaction': 'speech',
+            return SimpleNamespace(metadata={'prose': self.prose, 'interaction': 'speech',
                                              'participants': ['dockhand']})
 
     from pytest import MonkeyPatch
     with MonkeyPatch.context() as patch:
         patch.setattr(subject, 'TurnEngine', CapturingEngine)
-        metrics = tmp_path / 'metrics.json'
-        review = tmp_path / 'review.json'
-        report = _one(model_mode='sdk_mock', model_factory=Model,
-                      output_path=metrics, review_output_path=review)
-    assert outcomes == [first, first]
-    assert report == json.loads(metrics.read_text(encoding='utf-8'))
-    packet = json.loads(review.read_text(encoding='utf-8'))
+        runs = []
+        for index, prose in enumerate((first, second)):
+            metrics = tmp_path / f'metrics-{index}.json'
+            review = tmp_path / f'review-{index}.json'
+            report = _one(model_mode='sdk_mock', model_factory=lambda prose=prose: Model(prose),
+                          output_path=metrics, review_output_path=review)
+            assert report == json.loads(metrics.read_text(encoding='utf-8'))
+            runs.append((report, json.loads(review.read_text(encoding='utf-8')),
+                         metrics.read_text(encoding='utf-8')))
+    assert [outcome.narration for outcome in outcomes] == [first, first, second, second]
+    assert outcomes[0].snapshot == outcomes[2].snapshot
+    assert outcomes[0].snapshot == outcomes[1].snapshot
+    assert outcomes[2].snapshot == outcomes[3].snapshot
+    report, packet, _ = runs[0]
     item = packet['items'][0]
     assert packet['schema_version'] == 1 and packet['rubric_id'] == 'narrative-review-v1'
     assert set(packet['rubric']) == {'factual_grounding', 'request_response', 'coherence'}
@@ -49,7 +60,12 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
     assert packet['dataset_id'] == report['dataset_id']
     assert packet['coverage'] == report['coverage']
     assert packet['run_id'] == report['run_id'] == report['rows'][0]['run_id']
-    assert item['narration'] == first and item['narration'] != second
+    assert [run[1]['items'][0]['narration'] for run in runs] == [first, second]
+    assert [run[1]['items'][0]['narration_sha256'] for run in runs] == [
+        sha256(text.encode('utf-8')).hexdigest() for text in (first, second)]
+    assert runs[0][1]['items'][0]['narration_sha256'] != runs[1][1]['items'][0]['narration_sha256']
+    assert runs[0][0]['rows'][0]['result']['state_sha256'] == runs[1][0]['rows'][0]['result']['state_sha256']
+    assert runs[0][0]['rows'][0]['result']['world_sha256'] == runs[1][0]['rows'][0]['result']['world_sha256']
     assert item['narration_sha256'] == sha256(first.encode('utf-8')).hexdigest()
     assert item['player_text'].startswith('码头工，请提醒我')
     assert item['reference_facts'] and item['status'] == 'unreviewed'
@@ -57,10 +73,11 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
     assert {key: value['score'] for key, value in item['ratings'].items()} == {
         'factual_grounding': None, 'request_response': None, 'coherence': None}
     assert item['cost'] is None and report['rows'][0]['cost'] is None
-    encoded = metrics.read_text(encoding='utf-8')
-    assert first not in encoded and '守灯人阿禾' not in encoded
-    assert '码头工，请提醒我' not in encoded and 'ratings' not in encoded
-    assert report['passed'] is True  # Contract success is not a narrative quality grade.
+    for current_report, _, current_metrics in runs:
+        assert first not in current_metrics and second not in current_metrics
+        assert '守灯人阿禾' not in current_metrics
+        assert '码头工，请提醒我' not in current_metrics and 'ratings' not in current_metrics
+        assert current_report['passed'] is True  # Contract success is not a narrative quality grade.
 
 
 def test_default_never_exports_or_invokes_content_callback(tmp_path):
@@ -113,6 +130,57 @@ def test_replay_failure_keeps_first_text_and_failed_contract(tmp_path, monkeypat
     assert item['narration'] and item['status'] == 'unreviewed'
     assert item['checks']['replay'] is False and item['passed'] is False
     assert 'PRIVATE_REPLAY' not in json.dumps(item, ensure_ascii=False)
+
+
+@pytest.mark.parametrize('prior_failure,expected_error', [
+    (False, 'RuntimeError'), (True, 'ValueError')])
+def test_cleanup_failure_keeps_first_text_and_original_error(
+        tmp_path, monkeypatch, prior_failure, expected_error):
+    from examples.policy_comparison import task as subject
+
+    temporary_class = subject.TemporaryDirectory
+    temporary_paths = []
+
+    class FailingTemporary(temporary_class):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            temporary_paths.append(Path(self.name))
+
+        def cleanup(self):
+            super().cleanup()
+            raise RuntimeError('PRIVATE_CLEANUP')
+
+    monkeypatch.setattr(subject, 'TemporaryDirectory', FailingTemporary)
+    if prior_failure:
+        summarize = subject.summarize_attempt_usage
+        calls = 0
+
+        def fail_after_outcome(records):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError('PRIVATE_PRIMARY')
+            return summarize(records)
+
+        monkeypatch.setattr(subject, 'summarize_attempt_usage', fail_after_outcome)
+
+    review = tmp_path / 'review.json'
+    metrics = tmp_path / 'metrics.json'
+    report = _one(output_path=metrics, review_output_path=review)
+    item = json.loads(review.read_text(encoding='utf-8'))['items'][0]
+    assert report == json.loads(metrics.read_text(encoding='utf-8'))
+    assert report['passed'] is False
+    assert report['rows'][0]['error'] == {'type': expected_error}
+    assert item['error'] == report['rows'][0]['error']
+    assert item['narration'] == '码头工说：现有线索不足，我不能确定答案。'
+    assert item['narration_sha256'] == sha256(item['narration'].encode('utf-8')).hexdigest()
+    assert item['passed'] is False and item['status'] == 'unreviewed'
+    assert len(temporary_paths) == 1
+    assert all(not path.exists() for path in temporary_paths)
+    assert 'PRIVATE_CLEANUP' not in json.dumps(report, ensure_ascii=False)
+    assert 'PRIVATE_PRIMARY' not in json.dumps(report, ensure_ascii=False)
+    assert 'PRIVATE_CLEANUP' not in json.dumps(item, ensure_ascii=False)
+    assert 'PRIVATE_PRIMARY' not in json.dumps(item, ensure_ascii=False)
 
 
 def test_cancel_preserves_identity_and_partial_review(tmp_path, monkeypatch):
