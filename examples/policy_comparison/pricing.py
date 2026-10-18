@@ -26,6 +26,16 @@ def _invalid_snapshot() -> ValueError:
     return ValueError("invalid pricing snapshot")
 
 
+def _valid_free_text(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _canonical_rate(value: object) -> str:
     if not isinstance(value, str) or _RATE_PATTERN.fullmatch(value) is None:
         raise _invalid_snapshot()
@@ -68,7 +78,7 @@ class PriceSnapshot:
             raise _invalid_snapshot()
         pricing_id, as_of, currency, models = (data[field] for field in
                                                ("pricing_id", "as_of", "currency", "models"))
-        if not isinstance(pricing_id, str) or not pricing_id.strip():
+        if not _valid_free_text(pricing_id):
             raise _invalid_snapshot()
         if not isinstance(as_of, str) or _DATE_PATTERN.fullmatch(as_of) is None:
             raise _invalid_snapshot()
@@ -82,7 +92,7 @@ class PriceSnapshot:
             raise _invalid_snapshot()
         frozen_models: dict[str, ModelPrice] = {}
         for model, rates in models.items():
-            if not isinstance(model, str) or not model.strip():
+            if not _valid_free_text(model):
                 raise _invalid_snapshot()
             frozen_models[model] = ModelPrice.from_dict(rates)
         object.__setattr__(self, "schema_version", 1)

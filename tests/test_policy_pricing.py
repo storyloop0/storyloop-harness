@@ -1,6 +1,7 @@
 """Frozen pricing and exact evidence for the policy comparison example."""
 
 from dataclasses import FrozenInstanceError
+from hashlib import sha256
 import json
 
 import pytest
@@ -204,3 +205,45 @@ def test_json_loader_and_public_constructor_validate_and_copy(tmp_path):
     file = tmp_path / "pricing.json"
     file.write_text(json.dumps(pricing_data()), encoding="utf-8")
     assert load_pricing(file).to_dict() == PriceSnapshot(pricing_data()).to_dict()
+
+
+@pytest.mark.parametrize("field", ["pricing_id", "model"])
+@pytest.mark.parametrize("surrogate", ["\ud800", "\udfff"], ids=["high", "low"])
+def test_snapshot_constructors_reject_lone_surrogate(field, surrogate):
+    data = pricing_data()
+    if field == "pricing_id":
+        data["pricing_id"] = "synthetic" + surrogate
+    else:
+        data["models"] = {"offline-test" + surrogate: data["models"]["offline-test"]}
+    for constructor in (PriceSnapshot, PriceSnapshot.from_dict):
+        with pytest.raises(ValueError, match="^invalid pricing snapshot$"):
+            constructor(data)
+
+
+@pytest.mark.parametrize("field", ["pricing_id", "model"])
+@pytest.mark.parametrize("surrogate", ["\ud800", "\udfff"], ids=["high", "low"])
+def test_json_loader_rejects_escaped_lone_surrogate(tmp_path, field, surrogate):
+    data = pricing_data()
+    if field == "pricing_id":
+        data["pricing_id"] = "synthetic" + surrogate
+    else:
+        data["models"] = {"offline-test" + surrogate: data["models"]["offline-test"]}
+    file = tmp_path / "pricing.json"
+    file.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="^invalid pricing file$"):
+        load_pricing(file)
+
+
+def test_valid_chinese_and_supplementary_text_preserves_canonical_metadata(tmp_path):
+    data = pricing_data()
+    data["pricing_id"] = "合成价格-🧪"
+    data["models"] = {"模型-🧪": data["models"]["offline-test"]}
+    file = tmp_path / "pricing.json"
+    file.write_text(json.dumps(data), encoding="utf-8")
+    expected = PriceSnapshot(data).to_dict()
+    canonical = json.dumps(expected, sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":"))
+    metadata = load_pricing(file).to_metadata()
+    assert metadata == {"snapshot": expected,
+                        "sha256": sha256(canonical.encode("utf-8")).hexdigest()}
+    assert metadata == PriceSnapshot.from_dict(data).to_metadata()

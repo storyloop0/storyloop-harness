@@ -331,6 +331,29 @@ def test_cli_loads_snapshot_and_rejects_bad_file_before_runner(tmp_path, monkeyp
     assert calls == []
 
 
+@pytest.mark.parametrize("field", ["pricing_id", "model"])
+@pytest.mark.parametrize("surrogate", ["\ud800", "\udfff"], ids=["high", "low"])
+def test_cli_rejects_escaped_lone_surrogate_before_runner(
+        tmp_path, monkeypatch, capsys, field, surrogate):
+    from examples.policy_comparison import __main__
+
+    data = _data()
+    if field == "pricing_id":
+        data["pricing_id"] = "synthetic" + surrogate
+    else:
+        data["models"] = {"offline-test" + surrogate: data["models"]["offline-test"]}
+    file = tmp_path / "SENSITIVE_PATH.json"
+    file.write_text(json.dumps(data), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(__main__, "run_local", lambda **kwargs: calls.append(kwargs))
+    with pytest.raises(SystemExit):
+        __main__.main(["--pricing", str(file)])
+    err = capsys.readouterr().err
+    assert "invalid pricing file" in err
+    assert "SENSITIVE_PATH" not in err
+    assert calls == []
+
+
 def test_task_and_runner_reject_unvalidated_pricing_before_model():
     from examples.policy_comparison.cases import CASES
     from examples.policy_comparison.task import task
