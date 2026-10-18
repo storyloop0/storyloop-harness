@@ -61,14 +61,18 @@ class NarrativeFixture:
         materials.append(json.dumps(request['player_summary'], ensure_ascii=False))
         player_action = request.get('player_action', request.get('player_input', ''))
         if 'brasskey731' in player_action and any(OLD_FACT in item for item in materials):
-            prose = '码头工说：那把黄铜钥匙要交给守灯人阿禾。'
+            speech = '那把黄铜钥匙要交给守灯人阿禾。'
         elif 'sailmarker824' in player_action and any(RECENT_FACT in item for item in materials):
-            prose = '码头工说：蓝帆船停在东侧栈桥。'
+            speech = '蓝帆船停在东侧栈桥。'
         elif 'coastweather999' in player_action:
-            prose = '码头工说：今夜海上的风向尚未确认，需要再查证。'
+            speech = '今夜海上的风向尚未确认，需要再查证。'
         else:
-            prose = '码头工说：现有线索不足，我不能确定答案。'
+            speech = '现有线索不足，我不能确定答案。'
+        prose = ('码头工停下手里的活，回应你的问题。'
+                 if request.get('presentation_mode', 'novel') == 'interactive'
+                 else f'码头工说：{speech}')
         usage = SimpleNamespace(input_tokens=0, output_tokens=0)
         record_model_usage('narrative-speech-fixture-v1', 'scene_turn', usage)
         return SimpleNamespace(metadata={'prose': prose, 'interaction': 'speech',
+                                         'replies': [{'actor_id': 'dockhand', 'speech': speech}],
                                          'participants': ['dockhand']}, usage=usage)

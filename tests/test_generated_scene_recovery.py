@@ -381,6 +381,29 @@ def test_same_version_package_context_and_policy_changes_reject_before_projectio
             assert store.player_inputs_for('game') == []
 
 
+def test_saved_scene_rejects_changed_system_prompt_binding(tmp_path, monkeypatch):
+    import storyloop_harness.runtime.single_call as single_call
+
+    package = ScenarioPackage.load(EXAMPLE)
+    request = TurnInput('game', 'Hello', 'turn-1', package.version)
+    with FailOnceStore(tmp_path / 'prompt-binding.db') as store:
+        package.seed_game(store, 'game')
+        with pytest.raises(RuntimeError, match='injected commit'):
+            asyncio.run(recovery_engine(store, package, OfflineModel()).run_turn(request))
+        record = store.generated_scene_snapshot('game', 'turn-1')
+        assert record is not None
+        original = single_call.scene_system_prompt
+        monkeypatch.setattr(single_call, 'scene_system_prompt',
+                            lambda current: original(current) + ' changed prompt')
+        engine = recovery_engine(store, package, ForbiddenModel())
+        engine.session.projector.project = lambda *args: (_ for _ in ()).throw(
+            AssertionError('projection reran'))
+        with pytest.raises(GeneratedSceneMismatch):
+            asyncio.run(engine.run_turn(request))
+        assert store.generated_scene_snapshot('game', 'turn-1') == record
+        assert store.player_inputs_for('game') == []
+
+
 def test_changed_preferences_alone_resume_saved_scene_without_projection(tmp_path):
     package = ScenarioPackage.load(EXAMPLE)
     request = TurnInput('game', 'Hello', 'turn-1', package.version)
