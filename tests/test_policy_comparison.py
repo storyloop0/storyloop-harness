@@ -129,6 +129,7 @@ def test_runner_requires_exact_boolean_replay_check(mutation, expected_error):
             row['checks']['replay'] = 1 if mutation == 'nonbool' else False
         if mutation == 'false':
             row['passed'] = False
+            row['acceptance']['runtime_contract'] = 'failed'
         return row
 
     report = run_local(task_fn=altered, case_ids=('old-clue',),

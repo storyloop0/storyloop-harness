@@ -24,6 +24,7 @@ from storyloop_harness.generation import GenerationBudget
 from storyloop_harness.usage import collect_attempts, summarize_attempt_usage
 
 from .cases import suite_data
+from .acceptance import acceptance
 from .narrative import NarrativeFixture, seed_narrative_history
 from .pricing import PriceSnapshot, cost_evidence
 
@@ -138,6 +139,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
     preparation_started = perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
     evidence = {'case_id': case['id'], 'policy_id': policy.value, 'passed': False,
+                'acceptance': acceptance(passed=False, content_verified=False),
                 'checks': {'replay': False},
                 'provider_input_tokens': None, 'provider_output_tokens': None,
                 'attempt_summary': None, 'cost': None,
@@ -181,8 +183,8 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
             model = TimedCaptureModel(delegate, evidence)
             generation_budget = getattr(delegate, 'generation_budget', None)
             metadata = evidence['metadata']
-            fixture_model = ('narrative-speech-fixture-v1' if suite == 'narrative'
-                             else 'narrative-fixture-v1')
+            fixture_model = ('narrative-speech-fixture-v2' if suite == 'narrative'
+                             else 'narrative-fixture-v2')
             metadata.update({'model': getattr(delegate, 'model', fixture_model if model_mode == 'fixture' else None),
                              'stream': getattr(delegate, 'stream', None),
                              'tool_choice_policy': getattr(delegate, 'tool_choice_policy', None),
@@ -196,8 +198,8 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                              'case_sha256': _hash(json.dumps(case, sort_keys=True, ensure_ascii=False)),
                              'dataset_sha256': _hash(json.dumps(suite_cases, sort_keys=True, ensure_ascii=False))})
             if model_mode == 'fixture':
-                metadata.update({'fixture_id': 'narrative-speech-fixture-v1' if suite == 'narrative'
-                                 else 'narrative-fixture-v1', 'fixture_version': '1'})
+                metadata.update({'fixture_id': 'narrative-speech-fixture-v2' if suite == 'narrative'
+                                 else 'narrative-fixture-v2', 'fixture_version': '2'})
             evidence['metadata'] = metadata
             store = SQLiteGameStore(root / 'case.sqlite3')
             (seed_narrative_history if suite == 'narrative' else _seed)(store, package)
@@ -222,6 +224,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                 try:
                     with _timed(evidence, 'turn'):
                         outcome = await engine.run_turn(turn)
+                    evidence['acceptance'] = acceptance(passed=False, content_verified=True)
                     if review_sink is not None:
                         try:
                             review_sink({'narration': outcome.narration})
@@ -337,6 +340,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
                                 and r['same_narration'] is True and r['usage_count'] == 0
                                 and evidence['replay_attempt_count'] == 0)
             evidence['passed'] = all(checks.values())
+            evidence['acceptance'] = acceptance(passed=evidence['passed'], content_verified=True)
             if review_capture_error is not None:
                 raise review_capture_error
         except BaseException as error:
@@ -373,6 +377,7 @@ async def task(*, case, policy: ContextPolicy, model_mode='fixture', model_facto
     except BaseException as error:
         evidence['error'] = {'type': type(error).__name__}
         evidence['passed'] = False
+        evidence['acceptance']['runtime_contract'] = 'failed'
         if evidence_sink is not None:
             try:
                 evidence_sink(evidence)

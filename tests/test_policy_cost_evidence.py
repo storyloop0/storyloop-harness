@@ -50,11 +50,11 @@ def _row(transport, *, pricing=None, output_path=None):
 
 
 def _reply(text="window breaks"):
-    return json.dumps({"prose": text, "interaction": "action",
+    return json.dumps({"beats": [{"kind": "narration", "text": text}], "interaction": "action",
                        "action_id": "break_shop_window", "action": {"status": "occurred"}})
 
 
-def test_native_sdk_fallback_prices_both_attempts_once_and_freezes_metadata(tmp_path):
+def test_native_sdk_single_attempt_price_is_frozen(tmp_path):
     wire = []
     source = _data()
     file = tmp_path / "pricing.json"
@@ -68,21 +68,19 @@ def test_native_sdk_fallback_prices_both_attempts_once_and_freezes_metadata(tmp_
         n = len(wire)
         if n == 1:
             file.write_text(json.dumps(source), encoding="utf-8")
-        else:
-            file.unlink()
-        arguments = "invalid-json" if n == 1 else _reply()
+        arguments = _reply()
         return httpx2.Response(200, json=_completion(arguments, {
             "prompt_tokens": 10 * n, "completion_tokens": n,
             "total_tokens": 11 * n}))
 
     report, row = _row(transport, pricing=price)
     assert row["passed"] is True
-    assert len(wire) == len(row["attempt_summary"]["attempts"]) == 2
-    assert row["known_cost"] == row["cost"] == "0.000036"
+    assert len(wire) == len(row["attempt_summary"]["attempts"]) == 1
+    assert row["known_cost"] == row["cost"] == "0.000012"
     assert row["cost_status"] == "estimated"
     assert row["cost_reasons"] == row["unpriced_models"] == []
     assert row["cost_currency"] == "USD"
-    assert not file.exists()
+    assert json.loads(file.read_text(encoding='utf-8')) == source
     assert row["metadata"]["pricing"] == original_metadata
     assert row["metadata"]["pricing"]["snapshot"]["models"]["offline-test"]["input_per_million"] == "1"
     assert row["replay_attempt_count"] == row["replay"]["new_calls"] == row["replay"]["usage_count"] == 0

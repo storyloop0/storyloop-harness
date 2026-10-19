@@ -26,7 +26,7 @@ def _native_factory(transport):
     return factory
 
 
-def test_native_sdk_fallback_attempt_totals_and_privacy(monkeypatch):
+def test_native_sdk_invalid_scene_is_one_failed_attempt_with_private_evidence(monkeypatch):
     from examples.policy_comparison.runner import run_local
     subject = importlib.import_module('examples.policy_comparison.task')
     clock = [0]
@@ -37,7 +37,7 @@ def test_native_sdk_fallback_attempt_totals_and_privacy(monkeypatch):
         clock[0] += 3
         wire.append(json.loads(request.content))
         arguments = ('invalid-json' if len(wire) == 1 else
-                     json.dumps({'prose': 'window breaks', 'interaction': 'action',
+                     json.dumps({'beats': [{'kind': 'narration', 'text': 'window breaks'}], 'interaction': 'action',
                                  'action_id': 'break_shop_window', 'action': {'status': 'occurred'}}))
         return httpx2.Response(200, json=_completion(arguments, {'prompt_tokens': 10 * len(wire),
             'completion_tokens': len(wire), 'total_tokens': 11 * len(wire)}))
@@ -46,21 +46,21 @@ def test_native_sdk_fallback_attempt_totals_and_privacy(monkeypatch):
                        model_mode='sdk_mock', model_factory=_native_factory(transport))
     row = report['rows'][0]
     assert report['coverage']['full_matrix_selected'] is False
-    assert row['passed'] is True
-    assert row['checks']['same_authoritative_result'] is None
-    assert row['provider_input_tokens'] == 30
-    assert row['provider_output_tokens'] == 3
-    assert [a['outcome'] for a in row['attempt_summary']['attempts']] == ['failed', 'succeeded']
+    assert row['passed'] is False
+    assert row['acceptance']['structural_content'] == 'unavailable'
+    assert row['provider_input_tokens'] == 10
+    assert row['provider_output_tokens'] == 1
+    assert [a['outcome'] for a in row['attempt_summary']['attempts']] == ['failed']
     assert row['attempt_summary']['usage_complete'] is True
     assert row['metadata']['generation_budget'] == {'max_requests': 3, 'timeout_seconds': 90}
-    assert row['generation_seconds'] == 6
-    assert row['turn_seconds'] == 6
-    assert row['timing_status']['generation'] == 'completed'
-    assert row['timing_status']['turn'] == 'completed'
-    assert row['timing_status']['replay'] == 'completed'
-    assert row['checks']['replay'] is True
-    assert row['replay_attempt_count'] == 0
+    assert row['generation_seconds'] == 3
+    assert row['turn_seconds'] == 3
+    assert row['timing_status']['generation'] == 'failed'
+    assert row['timing_status']['turn'] == 'failed'
+    assert row['timing_status']['replay'] == 'not_started'
+    assert row['checks']['replay'] is False
     assert row['metadata']['timing_version'] == 'policy-phases-v1'
+    assert len(wire) == 1
     assert wire[0]['max_completion_tokens'] == row['metadata']['budget']['output_tokens']
     assert wire[0]['temperature'] == 0.7
     assert row['cost'] is None
@@ -76,7 +76,7 @@ def test_native_full_policy_group_does_not_apply_fixture_equality_gate():
     def transport(request):
         nonlocal counter
         counter += 1
-        reply = {'prose': f'variant {counter}', 'interaction': 'action',
+        reply = {'beats': [{'kind': 'narration', 'text': f'variant {counter}'}], 'interaction': 'action',
                  'action_id': 'break_shop_window', 'action': {'status': 'occurred'}}
         return httpx2.Response(200, json=_completion(json.dumps(reply),
             {'prompt_tokens': 5, 'completion_tokens': 2, 'total_tokens': 7}))
@@ -91,7 +91,7 @@ def test_native_full_policy_group_does_not_apply_fixture_equality_gate():
     assert counter == 4
 
 
-def test_replay_attempt_collector_is_separate_from_first_sdk_fallback(monkeypatch):
+def test_replay_attempt_collector_is_separate_from_first_sdk_attempt(monkeypatch):
     from examples.policy_comparison.runner import run_local
     subject = importlib.import_module('examples.policy_comparison.task')
     real_engine = subject.TurnEngine
@@ -102,16 +102,15 @@ def test_replay_attempt_collector_is_separate_from_first_sdk_fallback(monkeypatc
     def first_transport(request):
         clock[0] += 3
         first_wire.append(json.loads(request.content))
-        arguments = ('invalid-json' if len(first_wire) == 1 else
-                     json.dumps({'prose': 'window breaks', 'interaction': 'action',
-                                 'action_id': 'break_shop_window', 'action': {'status': 'occurred'}}))
+        arguments = json.dumps({'beats': [{'kind': 'narration', 'text': 'window breaks'}], 'interaction': 'action',
+                                'action_id': 'break_shop_window', 'action': {'status': 'occurred'}})
         return httpx2.Response(200, json=_completion(arguments, {
             'prompt_tokens': 10 * len(first_wire), 'completion_tokens': len(first_wire),
             'total_tokens': 11 * len(first_wire)}))
 
     def second_transport(request):
         second_wire.append(json.loads(request.content))
-        arguments = json.dumps({'prose': 'separate replay probe', 'interaction': 'action',
+        arguments = json.dumps({'beats': [{'kind': 'narration', 'text': 'separate replay probe'}], 'interaction': 'action',
                                 'action_id': 'break_shop_window', 'action': {'status': 'occurred'}})
         return httpx2.Response(200, json=_completion(arguments, {
             'prompt_tokens': 5, 'completion_tokens': 2, 'total_tokens': 7}))
@@ -148,10 +147,10 @@ def test_replay_attempt_collector_is_separate_from_first_sdk_fallback(monkeypatc
         asyncio.run(extra.client.close())
     row = report['rows'][0]
     assert report['passed'] is False
-    assert len(first_wire) == 2 and len(second_wire) == 1
-    assert len(row['attempt_summary']['attempts']) == 2
-    assert row['provider_input_tokens'] == 30 and row['provider_output_tokens'] == 3
-    assert row['generation_seconds'] == 6
+    assert len(first_wire) == 1 and len(second_wire) == 1
+    assert len(row['attempt_summary']['attempts']) == 1
+    assert row['provider_input_tokens'] == 10 and row['provider_output_tokens'] == 1
+    assert row['generation_seconds'] == 3
     assert row['replay_attempt_count'] == 1
     assert row['checks']['replay'] is False and row['passed'] is False
     assert row['replay']['new_calls'] == 0
@@ -419,7 +418,7 @@ def test_native_invalid_usage_is_not_coerced_to_zero():
     from examples.policy_comparison.runner import run_local
 
     def transport(request):
-        reply = {'prose': 'window breaks', 'interaction': 'action',
+        reply = {'beats': [{'kind': 'narration', 'text': 'window breaks'}], 'interaction': 'action',
                  'action_id': 'break_shop_window', 'action': {'status': 'occurred'}}
         return httpx2.Response(200, json=_completion(json.dumps(reply),
             {'prompt_tokens': -1, 'completion_tokens': 2, 'total_tokens': 1}))

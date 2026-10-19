@@ -7,6 +7,7 @@ from uuid import uuid4
 from storyloop_harness.context import ContextPolicy
 
 from .cases import suite_data
+from .acceptance import acceptance
 from .task import task
 from .pricing import PriceSnapshot, cost_evidence
 from .review import make_packet, validate_paths, write_packet
@@ -28,6 +29,7 @@ def _validate_row(row, case, policy, suite='contracts'):
     if (not isinstance(checks, dict) or not required.issubset(checks)
             or any(type(checks[name]) is not bool for name in required)
             or type(row.get('passed')) is not bool
+            or row.get('acceptance') != acceptance(passed=row['passed'], content_verified=True)
             or row['passed'] is not all(checks[name] for name in required)
             or not isinstance(result, dict)
             or not {'window_broken', 'action_outcome', 'state_version_delta',
@@ -116,10 +118,16 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                     row['checks']['same_authoritative_result'] = consistent
                     if evaluate:
                         row['passed'] = row['passed'] and consistent
+                        row['acceptance'] = acceptance(passed=row['passed'], content_verified=True)
             report = {'dataset_id': dataset_id, 'run_id': run_id,
                       'status': 'cancelled' if cancelled else status,
                       'passed': not cancelled and complete and all(row['passed'] for row in rows),
                       'coverage': coverage, 'rows': rows}
+            report['acceptance'] = {
+                'passed_scope': 'experiment_execution',
+                'runtime_matrix': 'passed' if report['passed'] else 'failed',
+                'semantic_quality': 'unreviewed',
+            }
             if review_output_path is not None:
                 try:
                     packet = make_packet(dataset_id=dataset_id, run_id=run_id,
@@ -184,6 +192,7 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                         rows.append({'case_id': case['id'], 'policy_id': policy.value,
                                      'run_id': run_id,
                                      'passed': False, 'error': {'type': type(error).__name__},
+                                     'acceptance': acceptance(passed=False, content_verified=False),
                                      **cost_evidence(summarize_attempt_usage(()), pricing),
                                      'metadata': {'pricing': pricing.to_metadata() if pricing is not None else None}})
         return finalize()

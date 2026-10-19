@@ -14,7 +14,7 @@ def test_narrative_suite_selects_its_own_twelve_rows_and_keeps_default():
     assert original['dataset_id'] == 'harbor-context-clues-v1'
     assert len(original['rows']) == 12
     assert {row['case_id'] for row in original['rows']} == {'old-clue', 'recent-clue', 'unrelated'}
-    assert narrative['dataset_id'] == 'harbor-narrative-clues-v1'
+    assert narrative['dataset_id'] == 'harbor-narrative-clues-v2'
     assert narrative['coverage']['dataset_pairs'] == len(narrative['rows']) == 12
     assert {row['case_id'] for row in narrative['rows']} == {
         'dialogue-old-clue', 'dialogue-recent-clue', 'dialogue-unknown-clue'}
@@ -59,22 +59,23 @@ def test_narrative_case_definitions_and_fixture_use_selected_material_only():
 
     old = asyncio.run(reply([], '', NARRATIVE_CASES[0]['player_text']))
     assert old['interaction'] == 'speech' and old['participants'] == ['dockhand']
-    assert '守灯人阿禾' not in old['prose'] and '线索不足' in old['prose']
+    assert '守灯人阿禾' not in old['beats'][0]['text']
+    assert '线索不足' in old['beats'][1]['text']
     selected_old = asyncio.run(reply([], '黄铜钥匙 brasskey731 交给守灯人阿禾',
                                      NARRATIVE_CASES[0]['player_text']))
-    assert '你记得' in selected_old['prose'] and '守灯人阿禾' in selected_old['prose']
-    assert '守灯人阿禾' not in selected_old['replies'][0]['speech']
-    assert '线索不足' in selected_old['replies'][0]['speech']
+    assert '你记得' in selected_old['beats'][0]['text'] and '守灯人阿禾' in selected_old['beats'][0]['text']
+    assert '守灯人阿禾' not in selected_old['beats'][1]['text']
+    assert '线索不足' in selected_old['beats'][1]['text']
     split_old = asyncio.run(reply([{'text': '黄铜钥匙 brasskey731'},
                                    {'text': '守灯人阿禾'}], '', NARRATIVE_CASES[0]['player_text']))
-    assert '守灯人阿禾' not in split_old['prose']
+    assert '守灯人阿禾' not in split_old['beats'][0]['text']
     recent = asyncio.run(reply([{'text': '蓝帆船 sailmarker824 停在东侧栈桥'}], '',
                                NARRATIVE_CASES[1]['player_text']))
-    assert '你记得' in recent['prose'] and '东侧栈桥' in recent['prose']
-    assert '东侧栈桥' not in recent['replies'][0]['speech']
-    assert '线索不足' in recent['replies'][0]['speech']
+    assert '你记得' in recent['beats'][0]['text'] and '东侧栈桥' in recent['beats'][0]['text']
+    assert '东侧栈桥' not in recent['beats'][1]['text']
+    assert '线索不足' in recent['beats'][1]['text']
     unknown = asyncio.run(reply([], '', NARRATIVE_CASES[2]['player_text']))
-    assert '风向' in unknown['prose'] and ('未' in unknown['prose'] or '不' in unknown['prose'])
+    assert '风向' in unknown['beats'][1]['text'] and ('未' in unknown['beats'][1]['text'] or '不' in unknown['beats'][1]['text'])
 
 
 def test_narrative_engine_preserves_variable_speech_and_world(monkeypatch):
@@ -91,7 +92,8 @@ def test_narrative_engine_preserves_variable_speech_and_world(monkeypatch):
 
     class Speech:
         async def __call__(self, messages, **kwargs):
-            return SimpleNamespace(metadata={'prose': '模型原创：码头工给出了另一种说法。',
+            return SimpleNamespace(metadata={'beats': [{'kind': 'narration',
+                'text': '模型原创：码头工给出了另一种说法。'}],
                 'interaction': 'speech', 'participants': ['dockhand']})
 
     monkeypatch.setattr(subject, 'TurnEngine', CapturingEngine)
@@ -162,7 +164,8 @@ def test_narrative_action_output_fails_contract():
 
     class WrongAction:
         async def __call__(self, messages, **kwargs):
-            return SimpleNamespace(metadata={'prose': 'wrong', 'interaction': 'action',
+            return SimpleNamespace(metadata={'beats': [{'kind': 'narration', 'text': 'wrong'}],
+                'interaction': 'action',
                 'participants': ['dockhand'], 'action_id': 'break_shop_window',
                 'action': {'status': 'occurred'}})
 
@@ -217,5 +220,77 @@ def test_cli_accepts_narrative_suite(capsys):
     assert main(['--suite', 'narrative', '--case', 'dialogue-old-clue',
                  '--policy', 'history-recent-v1']) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report['dataset_id'] == 'harbor-narrative-clues-v1'
+    assert report['dataset_id'] == 'harbor-narrative-clues-v2'
     assert len(report['rows']) == 1
+
+
+@pytest.mark.parametrize('case_id', ['dialogue-old-clue', 'dialogue-recent-clue',
+                                     'dialogue-unknown-clue'])
+@pytest.mark.parametrize('mode', ['interactive', 'novel'])
+def test_full_answer_duplicate_cannot_pass_narrative_acceptance(case_id, mode, monkeypatch):
+    from dataclasses import replace
+    from examples.policy_comparison import task as subject
+    from examples.policy_comparison.runner import run_local
+
+    real_package = subject._package
+    monkeypatch.setattr(subject, '_package', lambda root: replace(
+        real_package(root), presentation_mode=mode))
+
+    class Duplicate:
+        async def __call__(self, messages, **kwargs):
+            answer = '今夜海上的风向尚未确认，需要再查证。'
+            return SimpleNamespace(metadata={
+                'beats': [{'kind': 'narration', 'text': f'码头工说：{answer}'},
+                          {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': answer}],
+                'interaction': 'speech', 'participants': ['dockhand']})
+
+    row = run_local(suite='narrative', case_ids=(case_id,),
+                    policy_ids=('history-recent-v1',), model_mode='sdk_mock',
+                    model_factory=Duplicate)['rows'][0]
+    assert row['passed'] is False
+    assert row['acceptance']['runtime_contract'] == 'failed'
+    assert row['acceptance']['structural_content'] == 'unavailable'
+    assert row['acceptance']['bounded_duplicate_check'] == 'unavailable'
+    assert row['acceptance']['semantic_quality'] == 'unreviewed'
+
+
+def test_unsupported_valid_content_remains_unreviewed():
+    from examples.policy_comparison.runner import run_local
+
+    class Invented:
+        async def __call__(self, messages, **kwargs):
+            return SimpleNamespace(metadata={
+                'beats': [{'kind': 'narration', 'text': '码头工拿出一封不存在的秘信。'},
+                          {'kind': 'dialogue', 'actor_id': 'dockhand',
+                           'text': '我确认今夜会有金船驶来。'}],
+                'interaction': 'speech', 'participants': ['dockhand']})
+
+    report = run_local(suite='narrative', case_ids=('dialogue-unknown-clue',),
+                       policy_ids=('history-recent-v1',), model_mode='sdk_mock',
+                       model_factory=Invented)
+    row = report['rows'][0]
+    assert report['passed'] is True and row['passed'] is True
+    assert row['acceptance']['structural_content'] == 'passed'
+    assert row['acceptance']['bounded_duplicate_check'] == 'passed'
+    assert row['acceptance']['semantic_quality'] == 'unreviewed'
+    assert report['acceptance']['semantic_quality'] == 'unreviewed'
+
+
+@pytest.mark.parametrize('forgery', ['semantic', 'duplicate', 'runtime'])
+def test_runner_rejects_forged_acceptance(forgery):
+    from examples.policy_comparison.runner import run_local
+    baseline = run_local(suite='narrative', case_ids=('dialogue-old-clue',),
+                         policy_ids=('history-recent-v1',))['rows'][0]
+
+    async def altered(**kwargs):
+        row = deepcopy(baseline)
+        row['checks'].pop('same_authoritative_result', None)
+        key = {'semantic': 'semantic_quality', 'duplicate': 'bounded_duplicate_check',
+               'runtime': 'runtime_contract'}[forgery]
+        row['acceptance'][key] = 'passed' if key == 'semantic_quality' else 'failed'
+        return row
+
+    row = run_local(suite='narrative', task_fn=altered,
+                    case_ids=('dialogue-old-clue',),
+                    policy_ids=('history-recent-v1',))['rows'][0]
+    assert row['error'] == {'type': 'ValueError'}

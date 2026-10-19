@@ -62,6 +62,23 @@ flowchart LR
 
 Generated prose does not automatically become a world fact. Harness handles context, generation, validation and event execution; your application supplies model credentials, storage selection and pricing. `TurnEngine.project_context` lets you inspect requests without model calls or writes.
 
+Scene models now return one ordered content sequence:
+
+```json
+{
+  "beats": [
+    {"kind": "narration", "text": "The dockhand sets down the rope."},
+    {"kind": "dialogue", "actor_id": "dockhand", "text": "I have not confirmed tonight's wind direction."}
+  ],
+  "interaction": "speech",
+  "participants": ["dockhand"]
+}
+```
+
+`NarrativeTurn`, `SourceNarrativeTurn`, and custom generator `SceneTurn` require nonempty `beats`. Custom generators must construct this shape explicitly. Old model output with `prose` / `replies`, including payloads mixing those fields with `beats`, is rejected. Interactive and novel presentation derive their text from the same sequence; accepted visible beats commit in order. Invalid content fails before commit without deletion or an automatic content retry. Optional uncertain generation protection may leave a marker requiring operator action. Previously committed turns replay stored events; an uncommitted old snapshot cannot resume as new content.
+
+The automatic repetition rule covers one exact case: normalize a whole dialogue beat with Unicode NFKC and casefold, retain only Unicode alphanumerics, then reject it if its normalized length is at least 8 and it appears inside one similarly normalized narration beat. It does not compare dialogue beats or detect short utterances, repetition split across narration beats, paraphrases, or factual errors.
+
 **Status:** active incubation · MIT. APIs, configuration and saved formats may change without compatibility or migration support. Character views do not guarantee secret isolation; SQLite provides per-commit persistence, while applications own cross-process coordination, and a turn is not guaranteed to be atomic.
 
 ## Feedback and contributions
@@ -243,11 +260,11 @@ python -m examples.evaluation --langfuse --output result.json
 ```
 
 - Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
-- The default `contracts` policy comparison runs three fixed authored action cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. An accepted authored action uses canonical author text for the final narration. The separate `narrative` suite runs three free speech cases against the same four policies; it tests actual player-visible speech without assuming narration or event hashes match across policies. Both suites test runtime contracts only. The fixture reports no provider tokens, so cost is `null` even with pricing. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using Harness's default policy.
+- The default `contracts` policy comparison runs three fixed authored action cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. An accepted authored action uses canonical author text for the final narration. The separate `narrative` suite runs three free speech cases against the same four policies; it tests actual player-visible speech without assuming narration or event hashes match across policies. In both suites, `passed` means experiment execution passed; `acceptance.runtime_matrix` identifies the runtime matrix result. Each row's `acceptance` separates structural content, the bounded exact repetition rule above, and `semantic_quality: unreviewed`. Failed calls without verifiable output mark structure and repetition `unavailable`. A clue seen by the player does not imply the dockhand knows that fact; the fixture keeps player recollection in narration and the dockhand's uncertain answer in dialogue. The fixture reports no provider tokens, so cost is `null` even with pricing. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using Harness's default policy.
 
   `--review-output review.json` is an explicit local content export for the `narrative` suite only. The ordinary metrics report omits player text, reference facts, narration and ratings by default. The review packet contains the first final player-visible narration, each case's public synthetic reference facts, selected coverage and safe contract, token, cost and timing evidence. Its `run_id` matches the metrics report and each metric row; `narration_sha256` hashes the exact UTF-8 narration. A failed preparation has `null` narration and `not_available` status. A later replay or cleanup failure retains the first narration with failed checks. The output may contain player or story text, including generated content; inspect it before sharing. Neither flag enables paid calls. A separate `--live` with one explicit case and policy is required for provider use.
 
-  Each item starts with `status: unreviewed`, an empty reviewer, and `null` scores for factual grounding, response to the player's request, and coherence. For each dimension, enter 0 when it does not meet the criterion, 1 when it partly meets it, or 2 when it meets it; record a short quoted excerpt or reason in `evidence_note` and identify the reviewer. For factual grounding, check claims against the public reference facts and whether missing context is admitted. For request response, check whether the reply addresses the player's question. For coherence, check whether the final speech reads consistently and clearly. `null` means not reviewed, never zero. The tool does not import scores, average them, rank policies, run an automatic judge or upload the packet. Coverage names selected, completed and excluded case/policy pairs; compare only selected pairs and keep unknown costs unknown. No real quality improvement is claimed from these fixtures.
+  Each item starts with `status: unreviewed`, an empty reviewer, and `null` scores for factual grounding, response to the player's request, coherence, and duplicate or paraphrased answers. For each dimension, enter 0 when it does not meet the criterion, 1 when it partly meets it, or 2 when it meets it; record a short quoted excerpt or reason in `evidence_note` and identify the reviewer. For factual grounding, check claims against the public reference facts and whether missing context is admitted. For request response, check whether the reply addresses the player's question. For coherence, check whether the final speech reads consistently and clearly. For repetition, check whether narration restates the dialogue answer. `null` means not reviewed, never zero. The tool does not import scores, average them, rank policies, run an automatic judge or upload the packet. Coverage names selected, completed and excluded case/policy pairs; compare only selected pairs and keep unknown costs unknown. No real quality improvement is claimed from these fixtures.
 
   Optional `--pricing` reads a local JSON snapshot and estimates only reported attempt usage. It does not enable paid calls by itself. These are **synthetic rates for testing, not provider quotes**:
 
@@ -311,11 +328,11 @@ flowchart TD
     Rejected --> Commit
     Validate --> Commit[Commit adjudicated events with expected version]
     Commit -->|Store conflict or error| StoreError[Propagate store error]
-    Commit --> Work[Drain ready work: speech and scenario cues]
+    Commit --> Work[Drain ready work: character speech history and authorized overhearing]
     Work --> Output[Visible story and resulting snapshot]
 ```
 
-An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Character replies are generated together and delivered through `single_npc_reply` work; each character does not run a ReAct loop.
+An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Accepted visible beats commit in order with the player event. Later `single_npc_reply` work records each character's own speech history and authorized overhearing; it does not deliver dialogue to the player again. Each character does not run a ReAct loop.
 
 Authored actions are adjudicated against scenario rules and use the authored result as canonical scene prose. Rejections replace prose and discard speculative consequences. Open actions can only change declared mutable fields. Eligible numeric status changes commit with the player event and are not reapplied on replay; the application owns account billing. Free-form generated text is not guaranteed factually consistent. Store errors and later work failures need caller handling: the whole turn is not atomic, and failure before its first commit can require another model call.
 

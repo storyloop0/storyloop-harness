@@ -5,22 +5,22 @@ from types import SimpleNamespace
 from storyloop_harness.core.contracts import AgentContextCheckpoint, Observation, WorldEvent
 from storyloop_harness.usage import record_model_usage
 
-NARRATIVE_DATASET_ID = 'harbor-narrative-clues-v1'
+NARRATIVE_DATASET_ID = 'harbor-narrative-clues-v2'
 OLD_FACT = '黄铜钥匙 brasskey731 交给守灯人阿禾'
 RECENT_FACT = '蓝帆船 sailmarker824 停在东侧栈桥'
 NARRATIVE_CASES = (
     {'id': 'dialogue-old-clue',
      'player_text': '码头工，请提醒我：brasskey731 那把黄铜钥匙该交给谁？',
      'reference_facts': ['第0条玩家可见历史：黄铜钥匙 brasskey731 交给守灯人阿禾。'],
-     'review_expectation': '依据可见旧线索回答；缺少上下文时说明不知道，不编造收件人。'},
+     'review_expectation': '玩家曾见的线索不等于码头工知道收件人；检查其对白是否承认信息不足，并人工核对事实依据与重复表达。'},
     {'id': 'dialogue-recent-clue',
      'player_text': '码头工，刚提到的 sailmarker824 蓝帆船停在哪边？',
      'reference_facts': ['第23条玩家可见历史：蓝帆船 sailmarker824 停在东侧栈桥。'],
-     'review_expectation': '回应近期位置事实；缺少上下文时说明不知道。'},
+     'review_expectation': '玩家曾见的线索不等于码头工知道停泊位置；检查其对白是否承认信息不足，并人工核对事实依据与重复表达。'},
     {'id': 'dialogue-unknown-clue',
      'player_text': '码头工，coastweather999 今夜海上的风向已经确认了吗？',
      'reference_facts': ['既有历史和公开世界资料未确认今夜海上的风向。'],
-     'review_expectation': '表达信息不足或提出查证，不把预测说成已确认事实。'},
+     'review_expectation': '表达信息不足或提出查证，不把预测说成已确认事实；人工核对叙述与对白有无重复表达。'},
 )
 
 
@@ -69,11 +69,10 @@ class NarrativeFixture:
             speech = '今夜海上的风向尚未确认，需要再查证。'
         else:
             speech = '现有线索不足，我不能确定答案。'
-        prose = (recollection + '码头工停下手里的活，回应你的问题。'
-                 if request.get('presentation_mode', 'novel') == 'interactive'
-                 else f'{recollection}码头工说：{speech}')
+        beats = [{'kind': 'narration',
+                  'text': recollection + '码头工停下手里的活，回应你的问题。'},
+                 {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': speech}]
         usage = SimpleNamespace(input_tokens=0, output_tokens=0)
-        record_model_usage('narrative-speech-fixture-v1', 'scene_turn', usage)
-        return SimpleNamespace(metadata={'prose': prose, 'interaction': 'speech',
-                                         'replies': [{'actor_id': 'dockhand', 'speech': speech}],
+        record_model_usage('narrative-speech-fixture-v2', 'scene_turn', usage)
+        return SimpleNamespace(metadata={'beats': beats, 'interaction': 'speech',
                                          'participants': ['dockhand']}, usage=usage)

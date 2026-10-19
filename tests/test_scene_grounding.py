@@ -96,18 +96,14 @@ def test_narrative_fixture_keeps_player_recollection_out_of_dockhand_reply(
         {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
     ]))
     result = response.metadata
-    speech = result["replies"][0]["speech"]
+    speech = result["beats"][1]["text"]
     assert result["participants"] == ["dockhand"]
-    assert result["replies"] == [{"actor_id": "dockhand", "speech": speech}]
+    assert result["beats"][1] == {"kind": "dialogue", "actor_id": "dockhand", "text": speech}
     assert clue not in speech
     assert "线索不足" in speech
-    assert ("你记得" in result["prose"] and clue in result["prose"]) is known
-    if mode == "interactive":
-        assert "码头工停下手里的活" in result["prose"]
-        assert speech not in result["prose"]
-    else:
-        assert result["prose"].count(speech) == 1
-        assert result["prose"].endswith(f"码头工说：{speech}")
+    assert ("你记得" in result["beats"][0]["text"] and clue in result["beats"][0]["text"]) is known
+    assert "码头工停下手里的活" in result["beats"][0]["text"]
+    assert speech not in result["beats"][0]["text"]
 
 
 @pytest.mark.parametrize("mode", ["interactive", "novel"])
