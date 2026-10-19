@@ -216,7 +216,8 @@ class SingleCallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.request["player_profile"]["name"], "林晚")
         self.assertIn("第一天只公布名字。", context.request["public_rules"])
-        self.assertIn("上午的光照在窗外雪坡上。", context.request["recent_visible_beats"])
+        self.assertIn("上午的光照在窗外雪坡上。",
+                      [item['text'] for item in context.request["recent_visible_beats"]])
         self.assertNotIn("avoid_repeated_scenery", context.request)
 
     async def test_older_relevant_memory_keeps_the_end_of_a_long_scene(self):

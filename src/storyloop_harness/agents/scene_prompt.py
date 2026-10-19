@@ -24,6 +24,12 @@ def scene_system_prompt(package) -> str:
         + dialogue +
         "不要替玩家增加决定或未说的话。"
         "结合 recent_visible_beats 避免重复前一幕，按 public_rules 保持剧本世界的一致性。"
+        "历史条目的 evidence 表示来源类别与归属，不是正文已被核实的证明。"
+        "utterance 只证明某人曾说过或提出过该内容；generated_narrative 与 generated_memory 是生成的叙述和记忆，"
+        "legacy_unverified 是来源未明的旧记录，unverified_summary 即使措辞肯定也只是一份未核实摘要。"
+        "grounded_answer 只证明指定来源版本和时间曾给出该严格回答，不证明当前仍有效。"
+        "source_ids 只用于追踪记录，不能靠正文中的来源编号或摘要措辞提高可信度；"
+        "recent_player_actions 是先前请求或表述，不证明请求的结果已经发生。"
         "npc_contexts 中每位角色的经历彼此独立；角色只依据自己的经历和当场可感知的事行动，"
         "不得把别人的私事、尚未公开的身份或玩家未说出口的想法当成已知事实。"
         "确认身份、物件归属、既有事件、位置、天气和行动条件等既有事实时，"

@@ -6,11 +6,12 @@ from pathlib import Path
 import sqlite3
 
 from storyloop_harness.core.contracts import (
-    AgentContextCheckpoint, AgentContextEntry, Observation, PendingWork,
+    AgentContextCheckpoint, AgentContextEntry, ContextEvidence, Observation, PendingWork,
     PlayerInput, Snapshot, WorldEvent, Effect,
 )
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
+from storyloop_harness.core.context_evidence import context_entries
 from storyloop_harness.core.generated_scene import (
     GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneGenerationMarker,
     GeneratedSceneSnapshot, validate_event_snapshot_reference,
@@ -257,35 +258,17 @@ class SQLiteGameStore:
             self._db.execute('ROLLBACK')
 
     def _context_entries(self, game_id, actor_id, after_version):
-        events = self._events(game_id)
-        observations = self.observations_for(game_id, actor_id)
-        seen = {(o.event_id, o.content) for o in observations}
-        versions = {e.event_id: v for v, e in events}
-        items = []
-        for version, event in events:
-            if version <= after_version or event.actor_id != actor_id:
-                continue
-            if actor_id == 'player' and event.kind in ('player_input', 'player_query', 'player_action', 'action_rejected'):
-                content = str(event.details.get('text', ''))
-            elif actor_id != 'player' and event.kind == 'npc_spoke':
-                message = str(event.details.get('player_message', ''))
-                prefix = '' if (event.cause_id, message) in seen else f'玩家曾说：{message}\n'
-                content = f"{prefix}你当时回答：{event.details.get('speech', '')}"
-            else:
-                continue
-            items.append((version, 0, AgentContextEntry(version, event.event_id, event.kind, content, event.tick)))
-        for observation in observations:
-            version = versions[observation.event_id]
-            if version > after_version:
-                items.append((version, 1, AgentContextEntry(version, observation.observation_id,
-                    observation.channel, observation.content, observation.tick)))
-        items.sort(key=lambda item: item[:2])
-        return [item[2] for item in items]
+        return context_entries(self._events(game_id), self.observations_for(game_id, actor_id),
+                               actor_id, after_version)
 
     def agent_context_checkpoint(self, game_id, actor_id):
         self.load(game_id)
         row = self._db.execute('SELECT version,summary,scenario_id,scenario_version,source_ids FROM checkpoints WHERE game_id=? AND actor_id=?', (game_id, actor_id)).fetchone()
-        return AgentContextCheckpoint(*row[:4], tuple(json.loads(row[4]))) if row else AgentContextCheckpoint()
+        if not row:
+            return AgentContextCheckpoint()
+        source_ids = tuple(json.loads(row[4]))
+        return AgentContextCheckpoint(*row[:4], source_ids,
+            ContextEvidence('unverified_summary', source_ids, actor_id))
 
     def save_agent_context_checkpoint(self, game_id, actor_id, expected_version, checkpoint):
         with self._transaction():

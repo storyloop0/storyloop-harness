@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from storyloop_harness.world.scenario import ScenarioPackage
 
 FORMAT_VERSION = 1
-GENERATION_CONTRACT_VERSION = 2
+GENERATION_CONTRACT_VERSION = 3
 MARKER_FORMAT_VERSION = 1
 MARKER_HASH_KEYS = (
     'input_hash', 'base_state_hash', 'package_fingerprint', 'system_prompt_hash',
@@ -205,7 +205,7 @@ class GeneratedSceneSnapshot:
                     or canonical_json(body) != canonical_json_text
                     or body['format_version'] != FORMAT_VERSION
                     or type(body['generation_contract_version']) is not int
-                    or body['generation_contract_version'] not in (1, GENERATION_CONTRACT_VERSION)):
+                    or body['generation_contract_version'] not in (1, 2, GENERATION_CONTRACT_VERSION)):
                 raise ValueError('unsupported scene record')
             identity = body['snapshot_id']
             if not isinstance(identity, str) or identity != content_hash({

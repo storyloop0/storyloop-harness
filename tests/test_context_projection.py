@@ -293,9 +293,10 @@ def test_large_source_hints_yield_before_recent_history_and_role_identity():
         event=WorldEvent(f'recent-event-{i}','synthetic',None,None,i,())
         store.commit('game',store.load('game').version,event,
             (Observation(f'recent-{i}',event.event_id,'player','scene','Recent player experience '+str(i),i),),())
-    fact=base.story_blueprint.facts[0].model_copy(update={'text':'Large optional fact '*80})
+    fact=base.story_blueprint.facts[0].model_copy(update={'text':'Large optional fact '*260})
     package=replace(base,story_blueprint=base.story_blueprint.model_copy(update={'facts':[fact]}))
-    result=SceneContextProjector(store,package,context_budget=ContextBudget(max_material_tokens=3000)).project(store.load('game'),'hello')
+    # Evidence envelopes are included in the material budget.
+    result=SceneContextProjector(store,package,context_budget=ContextBudget(max_material_tokens=4500)).project(store.load('game'),'hello')
     assert len(result.request['player_history']) == 3
     assert result.request['source_story_facts'] == []
     assert all(item['role_card'] for item in result.request['npc_contexts'])

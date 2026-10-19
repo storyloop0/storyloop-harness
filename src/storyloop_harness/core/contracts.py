@@ -48,14 +48,26 @@ class PlayerInput:
 
 
 @dataclass(frozen=True)
+class ContextEvidence:
+    """Producer-derived provenance, not a claim that content is currently true."""
+
+    kind: str = "legacy_unverified"
+    source_ids: tuple[str, ...] = ()
+    owner_id: str | None = None
+    speaker_id: str | None = None
+    fact_reference: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
 class AgentContextEntry:
-    """One committed fact visible to exactly one agent."""
+    """One committed record visible to exactly one agent."""
 
     state_version: int
     entry_id: str
     channel: str
     content: str
     tick: int
+    evidence: ContextEvidence = field(default_factory=ContextEvidence)
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,8 @@ class AgentContextCheckpoint:
     scenario_id: str = ""
     scenario_version: str = ""
     source_ids: tuple[str, ...] = ()
+    evidence: ContextEvidence = field(default_factory=lambda: ContextEvidence(kind="unverified_summary"),
+                                      compare=False)
 
 
 @dataclass(frozen=True)

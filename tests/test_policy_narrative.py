@@ -140,7 +140,8 @@ def test_narrative_seed_reaches_selected_request_without_reference_injection():
         assert '依据可见旧线索回答' not in encoded
         assert 'FOREIGN_GAME' not in encoded and 'UNSELECTED_PRIVATE' not in encoded
         if policy_id == 'history-summary-v1':
-            assert request['player_summary'] == fact
+            assert request['player_summary']['text'] == fact
+            assert request['player_summary']['evidence']['kind'] == 'unverified_summary'
             assert request['npc_contexts'][0]['own_summary'] == ''
             assert 'dockhand:16' not in report['rows'][0]['source_ids']['selected']
 

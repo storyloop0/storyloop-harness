@@ -1,5 +1,7 @@
 """Deterministic recipient-owned history ranking and excerpting."""
 import re
+from storyloop_harness.core.contracts import ContextEvidence
+from storyloop_harness.core.context_evidence import evidence_payload
 
 
 def _excerpt(text, terms, limit):
@@ -55,4 +57,6 @@ def history_selection(entries, query, *, recent, older, excerpt_chars):
         reason = ('recent' if index >= split else 'relevant' if relevance(entry)
                   else 'notable' if entry.channel in notable else 'ranked')
         text = _excerpt(entry.content, terms, excerpt_chars)
-        yield entry, {'channel': entry.channel, 'text': text, 'tick': entry.tick}, selected, reason
+        evidence = getattr(entry, 'evidence', ContextEvidence())
+        yield entry, {'channel': entry.channel, 'text': text, 'tick': entry.tick,
+                      'evidence': evidence_payload(evidence)}, selected, reason

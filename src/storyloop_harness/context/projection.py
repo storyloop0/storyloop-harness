@@ -3,7 +3,8 @@ from storyloop_harness.context import ContextBudget, ContextProjection
 from storyloop_harness.context.selection import Selection
 from storyloop_harness.context.history import history_selection
 from storyloop_harness.context.policy import ContextPolicy, policy_spec
-from storyloop_harness.core.contracts import Snapshot
+from storyloop_harness.core.contracts import ContextEvidence, Snapshot
+from storyloop_harness.core.context_evidence import evidence_payload
 from storyloop_harness.core.store_port import GameStore
 from storyloop_harness.runtime.player_preferences import current_player_preferences
 from storyloop_harness.runtime.story_clock import StoryClock
@@ -101,14 +102,24 @@ class SceneContextProjector:
                          if self.program is not None else {})
         visible = [item for item in self.store.observations_for(snapshot.game_id, 'player', limit=6)
                    if item.channel in {'scene', 'narration', 'dialogue'}]
+        visible_evidence = {entry.entry_id: getattr(entry, 'evidence', ContextEvidence())
+            for entry in self.store.agent_context_entries(snapshot.game_id, 'player')}
         for index, item in enumerate(visible):
+            evidence = evidence_payload(visible_evidence.get(item.observation_id,
+                ContextEvidence(source_ids=(item.event_id, item.observation_id), owner_id='player')))
             selection.add('observation', item.observation_id, ('recent_visible_beats',),
-                item.content, item.content[-900:], owner='player', group=True, optional=True,
+                {'text': item.content, 'evidence': evidence},
+                {'text': item.content[-900:], 'evidence': evidence},
+                owner='player', group=True, optional=True,
                 reason='recent', selected=index >= max(0, len(visible)-4),
                 omission='item_limit' if index < max(0, len(visible)-4) else None)
         for item in recent_inputs:
-            selection.add('player_input', item.event_id, ('recent_player_actions',), item.text,
-                item.text[:200], reason='recent', owner='player', group=True, optional=True)
+            evidence = evidence_payload(ContextEvidence('utterance', (item.event_id,),
+                                                        'player', 'player'))
+            selection.add('player_input', item.event_id, ('recent_player_actions',),
+                {'text': item.text, 'evidence': evidence},
+                {'text': item.text[:200], 'evidence': evidence},
+                reason='recent', owner='player', group=True, optional=True)
         lore = self.package.worldbook.visible_lore('player', limit=None)
         for index, item in enumerate(lore):
             selection.add('worldbook_lore', item.entry_id, ('public_setting',), item.text,
@@ -304,7 +315,11 @@ class SceneContextProjector:
                     or checkpoint.through_version > snapshot.version):
                 raise ValueError('context checkpoint scenario does not match game')
             selection.add('checkpoint', f'{owner}:{checkpoint.through_version}', path,
-                checkpoint.summary, checkpoint.summary[:1200], reason='summary',
+                {'text': checkpoint.summary, 'evidence': evidence_payload(
+                    ContextEvidence('unverified_summary', checkpoint.source_ids, owner))},
+                {'text': checkpoint.summary[:1200], 'evidence': evidence_payload(
+                    ContextEvidence('unverified_summary', checkpoint.source_ids, owner))},
+                reason='summary',
                 owner=owner, version=checkpoint.through_version, optional=True)
 
     def _collect_history(self, selection, snapshot, owner, checkpoint, query, path,
@@ -313,7 +328,8 @@ class SceneContextProjector:
         entries = self.store.agent_context_entries(snapshot.game_id, owner, cursor)
         for entry, value, selected, reason in history_selection(entries, query,
                 recent=window.recent, older=window.older, excerpt_chars=window.excerpt_chars):
-            raw = {'channel': entry.channel, 'text': entry.content, 'tick': entry.tick}
+            raw = {'channel': entry.channel, 'text': entry.content, 'tick': entry.tick,
+                   'evidence': evidence_payload(getattr(entry, 'evidence', ContextEvidence()))}
             selection.add('history', entry.entry_id, path, raw, value,
                 reason=reason, selected=selected, omission=None if selected else 'rank_limit',
                 owner=owner, version=entry.state_version, optional=True, group=True)
