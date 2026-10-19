@@ -294,3 +294,27 @@ def test_runner_rejects_forged_acceptance(forgery):
                     case_ids=('dialogue-old-clue',),
                     policy_ids=('history-recent-v1',))['rows'][0]
     assert row['error'] == {'type': 'ValueError'}
+
+
+def test_emitted_narrative_row_recomputes_acceptance_after_late_failure():
+    from examples.policy_comparison.runner import run_local
+    baseline = run_local(suite='narrative', case_ids=('dialogue-old-clue',),
+                         policy_ids=('history-recent-v1',))['rows'][0]
+
+    async def failed(*, evidence_sink, **kwargs):
+        row = deepcopy(baseline)
+        row['checks'].pop('same_authoritative_result', None)
+        row['acceptance'] = {'runtime_contract': 'passed', 'semantic_quality': 'passed'}
+        evidence_sink(row)
+        raise RuntimeError('PRIVATE_FAILURE')
+
+    report = run_local(suite='narrative', task_fn=failed,
+                       case_ids=('dialogue-old-clue',),
+                       policy_ids=('history-recent-v1',))
+    row = report['rows'][0]
+    assert report['passed'] is row['passed'] is False
+    assert row['result'] == baseline['result']
+    assert row['acceptance']['runtime_contract'] == 'failed'
+    assert row['acceptance']['structural_content'] == 'passed'
+    assert row['acceptance']['bounded_duplicate_check'] == 'passed'
+    assert row['acceptance']['semantic_quality'] == 'unreviewed'

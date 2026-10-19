@@ -115,6 +115,26 @@ def test_preparation_failure_has_no_review_text(tmp_path):
     assert 'PRIVATE_PREPARATION' not in json.dumps(item, ensure_ascii=False)
 
 
+def test_emitted_malformed_failure_does_not_export_forged_acceptance(tmp_path):
+    async def failed(*, case, policy, evidence_sink, review_sink, **kwargs):
+        review_sink({'narration': 'Visible first answer.'})
+        evidence_sink({'case_id': case['id'], 'policy_id': policy.value,
+                       'passed': True, 'acceptance': {'semantic_quality': 'passed'},
+                       'checks': {'replay': True}, 'result': {'world_sha256': 'forged'}})
+        raise RuntimeError('PRIVATE_FAILURE')
+
+    report = _one(task_fn=failed, review_output_path=tmp_path / 'review.json')
+    item = json.loads((tmp_path / 'review.json').read_text(encoding='utf-8'))['items'][0]
+    assert report['passed'] is item['passed'] is False
+    assert item['narration'] == 'Visible first answer.'
+    assert item['acceptance'] == report['rows'][0]['acceptance']
+    assert item['acceptance']['runtime_contract'] == 'failed'
+    assert item['acceptance']['structural_content'] == 'unavailable'
+    assert item['acceptance']['bounded_duplicate_check'] == 'unavailable'
+    assert item['acceptance']['semantic_quality'] == 'unreviewed'
+    assert 'result' not in report['rows'][0]
+
+
 def test_replay_failure_keeps_first_text_and_failed_contract(tmp_path, monkeypatch):
     from examples.policy_comparison import task as subject
     real_engine = subject.TurnEngine

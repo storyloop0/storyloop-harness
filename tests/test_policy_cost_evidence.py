@@ -305,6 +305,34 @@ def test_runner_minimal_failure_has_unknown_cost_and_pricing():
     assert "EXCEPTION_SENTINEL" not in json.dumps(report)
 
 
+def test_malformed_emitted_row_keeps_known_cost_without_quality_claims():
+    async def failed(*, case, policy, evidence_sink, **kwargs):
+        evidence_sink({
+            "case_id": case["id"], "policy_id": policy.value, "passed": True,
+            "acceptance": {"runtime_contract": "passed", "semantic_quality": "passed"},
+            "checks": {"replay": True}, "result": {"state_sha256": "forged"},
+            "provider_input_tokens": 7, "provider_output_tokens": 2,
+            "known_cost": "0.000011", "cost": None, "cost_status": "unknown",
+            "cost_currency": "USD", "cost_reasons": ["incomplete_stream"],
+            "unpriced_models": [],
+        })
+        raise RuntimeError("PRIVATE_FAILURE")
+
+    report = run_local(task_fn=failed, case_ids=("old-clue",),
+                       policy_ids=("history-recent-v1",), pricing=_price())
+    row = report["rows"][0]
+    assert report["passed"] is row["passed"] is False
+    assert row["provider_input_tokens"] == 7
+    assert row["provider_output_tokens"] == 2
+    assert row["known_cost"] == "0.000011" and row["cost"] is None
+    assert row["cost_reasons"] == ["incomplete_stream"]
+    assert row["metadata"]["pricing"] == _price().to_metadata()
+    assert row["acceptance"]["runtime_contract"] == "failed"
+    assert row["acceptance"]["structural_content"] == "unavailable"
+    assert row["acceptance"]["semantic_quality"] == "unreviewed"
+    assert "result" not in row and "checks" not in row
+
+
 def test_cli_loads_snapshot_and_rejects_bad_file_before_runner(tmp_path, monkeypatch, capsys):
     from examples.policy_comparison import __main__
     file = tmp_path / "SENSITIVE_PATH.json"

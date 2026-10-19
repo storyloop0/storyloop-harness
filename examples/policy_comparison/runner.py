@@ -10,7 +10,7 @@ from .cases import suite_data
 from .acceptance import acceptance
 from .task import task
 from .pricing import PriceSnapshot, cost_evidence
-from .review import make_packet, validate_paths, write_packet
+from .review import SAFE_ROW, make_packet, validate_paths, write_packet
 from storyloop_harness.usage import summarize_attempt_usage
 
 REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
@@ -53,6 +53,55 @@ def _validate_row(row, case, policy, suite='contracts'):
             or checks['dockhand_target'] is not (result['target_ids'] == ['dockhand'])
             or checks['protected_world'] is not result['world_unchanged']):
         raise ValueError('policy task returned an incomplete or inconsistent narrative row')
+
+
+def _failed_row(case, policy, run_id, error, pricing, emitted=None, suite='contracts'):
+    """Retain usable failure evidence without accepting a task's success labels."""
+    row = {'case_id': case['id'], 'policy_id': policy.value, 'run_id': run_id,
+           'passed': False, 'error': {'type': type(error).__name__},
+           'acceptance': acceptance(passed=False, content_verified=False),
+           **cost_evidence(summarize_attempt_usage(()), pricing),
+           'metadata': {'pricing': pricing.to_metadata() if pricing is not None else None}}
+    if not isinstance(emitted, dict):
+        return row
+    for key in SAFE_ROW:
+        if key in emitted:
+            try:
+                json.dumps(emitted[key])
+            except (TypeError, ValueError):
+                continue
+            row[key] = emitted[key]
+    if isinstance(emitted.get('metadata'), dict):
+        try:
+            json.dumps(emitted['metadata'])
+        except (TypeError, ValueError):
+            pass
+        else:
+            row['metadata'] = dict(emitted['metadata'])
+            row['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
+    checks = emitted.get('checks')
+    required = NARRATIVE_REQUIRED_CHECKS if suite == 'narrative' else REQUIRED_CHECKS
+    if (emitted.get('case_id') == case['id'] and emitted.get('policy_id') == policy.value
+            and isinstance(checks, dict) and required.issubset(checks)
+            and all(type(checks[name]) is bool for name in required)):
+        candidate = {**emitted, 'passed': all(checks[name] for name in required),
+                     'acceptance': acceptance(passed=all(checks[name] for name in required),
+                                              content_verified=True)}
+        try:
+            _validate_row(candidate, case, policy, suite)
+            json.dumps(emitted)
+        except (ValueError, TypeError, KeyError):
+            pass
+        else:
+            row.update(emitted)
+            row['case_id'], row['policy_id'], row['run_id'] = case['id'], policy.value, run_id
+            row['passed'] = False
+            row['acceptance'] = acceptance(passed=False, content_verified=True)
+            row['error'] = {'type': type(error).__name__}
+            row['metadata'] = (dict(emitted['metadata'])
+                               if isinstance(emitted.get('metadata'), dict) else {})
+            row['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
+    return row
 
 
 def _selection(ids, available, label):
@@ -172,11 +221,10 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                     _validate_row(row, case, policy, suite)
                     row['run_id'] = run_id
                     rows.append(row)
-                except (asyncio.CancelledError, KeyboardInterrupt):
+                except (asyncio.CancelledError, KeyboardInterrupt) as original_error:
                     if emitted:
-                        for item in emitted:
-                            item['run_id'] = run_id
-                        rows.extend(emitted)
+                        rows.append(_failed_row(case, policy, run_id, original_error, pricing,
+                                                emitted[0], suite))
                     try:
                         finalize(cancelled=True)
                     except Exception:
@@ -185,15 +233,9 @@ def run_local(*, task_fn=task, case_ids=None, policy_ids=None,
                     raise
                 except Exception as error:
                     if emitted:
-                        for item in emitted:
-                            item['run_id'] = run_id
-                        rows.extend(emitted)
+                        rows.append(_failed_row(case, policy, run_id, error, pricing,
+                                                emitted[0], suite))
                     else:
-                        rows.append({'case_id': case['id'], 'policy_id': policy.value,
-                                     'run_id': run_id,
-                                     'passed': False, 'error': {'type': type(error).__name__},
-                                     'acceptance': acceptance(passed=False, content_verified=False),
-                                     **cost_evidence(summarize_attempt_usage(()), pricing),
-                                     'metadata': {'pricing': pricing.to_metadata() if pricing is not None else None}})
+                        rows.append(_failed_row(case, policy, run_id, error, pricing))
         return finalize()
     return asyncio.run(run())
