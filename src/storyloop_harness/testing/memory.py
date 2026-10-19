@@ -4,6 +4,7 @@ from threading import RLock
 from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry, PlayerInput
 from storyloop_harness.core.state import apply_event
 from storyloop_harness.core.checkpoints import validate_checkpoint
+from storyloop_harness.core.context_evidence import context_entries
 from storyloop_harness.core.generated_scene import (
     GeneratedSceneConflict, GeneratedSceneCorrupt, GeneratedSceneGenerationMarker,
     GeneratedSceneSnapshot, validate_event_snapshot_reference,
@@ -143,28 +144,8 @@ class InMemoryGameStore:
 
     def agent_context_entries(self, game_id, actor_id, after_version=-1):
         game = self._games[game_id]
-        observations = self.observations_for(game_id, actor_id)
-        seen = {(o.event_id, o.content) for o in observations}
-        items = []
-        for version, event in game['events'].values():
-            if version <= after_version or event.actor_id != actor_id:
-                continue
-            if actor_id == 'player' and event.kind in ('player_input','player_query','player_action','action_rejected'):
-                content = str(event.details.get('text', ''))
-            elif actor_id != 'player' and event.kind == 'npc_spoke':
-                message = str(event.details.get('player_message', ''))
-                prefix = '' if (event.cause_id, message) in seen else f'玩家曾说：{message}\n'
-                content = f"{prefix}你当时回答：{event.details.get('speech', '')}"
-            else:
-                continue
-            items.append((version, 0, AgentContextEntry(version, event.event_id, event.kind, content, event.tick)))
-        for observation in observations:
-            version = game['events'][observation.event_id][0]
-            if version > after_version:
-                items.append((version, 1, AgentContextEntry(version, observation.observation_id,
-                    observation.channel, observation.content, observation.tick)))
-        items.sort(key=lambda item: item[:2])
-        return deepcopy([item[2] for item in items])
+        return deepcopy(context_entries(game['events'].values(),
+            self.observations_for(game_id, actor_id), actor_id, after_version))
 
     def agent_context_checkpoint(self, game_id, actor_id):
         return self._games[game_id]['checkpoints'].get(actor_id, AgentContextCheckpoint())

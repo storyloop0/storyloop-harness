@@ -24,10 +24,14 @@ class SceneContext:
 
 
 def segment_for_observation(store: GameStore, game_id: str, item: Observation) -> StorySegment:
+    details = store.event_details(game_id, item.event_id) or {}
+    visible = details.get('visible_beats', {})
+    part = visible.get(item.observation_id) if isinstance(visible, dict) else None
+    if isinstance(part, dict):
+        return StorySegment(**part)
     if item.channel != "dialogue":
         kind = "message" if item.channel == "private_message" else "scene" if item.channel == "scene" else "narration"
         return StorySegment(kind, item.content)
-    details = store.event_details(game_id, item.event_id) or {}
     speaker_id = details.get("speaker_id")
     speaker_name = details.get("speaker_name")
     speech = details.get("speech")

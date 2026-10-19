@@ -91,6 +91,32 @@ def test_post_marker_generator_error_is_preserved_and_retry_is_blocked(error, mo
     assert store.generated_scene_generation_marker('game', 'turn-1') == marker
 
 
+def test_generation_marker_rejects_changed_system_prompt_binding(monkeypatch):
+    import storyloop_harness.runtime.single_call as single_call
+
+    package, store, turn, engine, _ = setup()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError('generation failed')
+
+    monkeypatch.setattr(engine.session.generator, 'generate', fail)
+    with pytest.raises(RuntimeError, match='generation failed'):
+        asyncio.run(engine.run_turn(turn))
+    marker = store.generated_scene_generation_marker('game', 'turn-1')
+    assert marker is not None
+    original = single_call.scene_system_prompt
+    monkeypatch.setattr(single_call, 'scene_system_prompt',
+                        lambda current: original(current) + ' changed prompt')
+    retry = TurnEngine(store, package, CountedOfflineModel(),
+        generated_scene_recovery=GeneratedSceneRecovery(
+            store, 'offline:v1', protect_uncertain_generation=True))
+    monkeypatch.setattr(retry.session.projector, 'project', forbidden)
+    with pytest.raises(GeneratedSceneMismatch):
+        asyncio.run(retry.run_turn(turn))
+    assert store.generated_scene_generation_marker('game', 'turn-1') == marker
+    assert store.player_inputs_for('game') == []
+
+
 @pytest.mark.parametrize('persist_first', [False, True])
 def test_marker_write_failure_never_enters_generator(persist_first, monkeypatch):
     _, store, turn, engine, model = setup()

@@ -46,23 +46,20 @@ class SceneResponderContextTests(unittest.TestCase):
         self.assertIn("missing boat", str(own["own_history"]))
         self.assertNotIn("missing boat", str(context.request["npc_contexts"][1:]))
 
-    def test_unprojected_actor_is_removed_from_replies_targets_and_memories(self):
+    def test_unprojected_dialogue_actor_rejects_the_whole_plan(self):
         before = self.store.load("game")
         context = self.projector.project(before, "Hello everyone")
         plan = SceneTurn.model_validate({
             "decision": {"intent": "speech", "target_ids": ["dockhand", "guide"]},
-            "prose": "Dockhand and Guide greet you.",
-            "replies": [{"actor_id": actor_id, "speech": "Welcome."}
+            "beats": [{"kind": "dialogue", "actor_id": actor_id, "text": "Welcome."}
                         for actor_id in ("dockhand", "guide")],
             "memories": [{"actor_id": actor_id, "fact": "Greeted the visitor."}
                          for actor_id in ("dockhand", "guide")],
         })
         session = SingleCallGameSession(self.store, self.package, None, self.projector)
-        validated = session._validate_plan(before, plan, context.focus_actor_ids,
-                                           context.nearby_actor_ids)
-        self.assertEqual([item.actor_id for item in validated.replies], ["dockhand"])
-        self.assertEqual(validated.decision.target_ids, ["dockhand"])
-        self.assertEqual([item.actor_id for item in validated.memories], ["dockhand"])
+        with self.assertRaisesRegex(ValueError, 'authorized'):
+            session._validate_plan(before, plan, context.focus_actor_ids,
+                                   context.nearby_actor_ids)
 
     def test_empty_generated_card_falls_back_to_authored_role(self):
         before = self.store.load("game")

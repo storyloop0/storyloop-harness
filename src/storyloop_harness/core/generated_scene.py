@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 from storyloop_harness.core.contracts import Snapshot
 
-from storyloop_harness.agents.scene_schema import SceneTurn
+from storyloop_harness.agents.scene_schema import LegacySceneTurn, SceneTurn
 from storyloop_harness.models.usage import ModelUsage
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from storyloop_harness.world.scenario import ScenarioPackage
 
 FORMAT_VERSION = 1
-GENERATION_CONTRACT_VERSION = 1
+GENERATION_CONTRACT_VERSION = 3
 MARKER_FORMAT_VERSION = 1
 MARKER_HASH_KEYS = (
     'input_hash', 'base_state_hash', 'package_fingerprint', 'system_prompt_hash',
@@ -96,7 +96,8 @@ def logical_value(value: object) -> object:
 
 def package_fingerprint(package: ScenarioPackage) -> str:
     data = {field.name: logical_value(getattr(package, field.name))
-            for field in fields(package) if field.name != 'worldbook'}
+            for field in fields(package) if field.name != 'worldbook'
+            and not (field.name == 'facts' and not package.facts)}
     data['worldbook'] = {'package_id': package.worldbook.package_id,
                          'version': package.worldbook.version,
                          'entries': logical_value(package.worldbook.entries)}
@@ -203,7 +204,8 @@ class GeneratedSceneSnapshot:
             if (not isinstance(body, dict) or frozenset(body) != BODY_KEYS
                     or canonical_json(body) != canonical_json_text
                     or body['format_version'] != FORMAT_VERSION
-                    or body['generation_contract_version'] != GENERATION_CONTRACT_VERSION):
+                    or type(body['generation_contract_version']) is not int
+                    or body['generation_contract_version'] not in (1, 2, GENERATION_CONTRACT_VERSION)):
                 raise ValueError('unsupported scene record')
             identity = body['snapshot_id']
             if not isinstance(identity, str) or identity != content_hash({
@@ -223,7 +225,8 @@ class GeneratedSceneSnapshot:
             for key in ('focus_actor_ids', 'nearby_actor_ids'):
                 if not isinstance(body[key], list) or not all(isinstance(x, str) for x in body[key]):
                     raise ValueError('invalid actor ids')
-            parsed_scene = SceneTurn.model_validate(body['scene'])
+            scene_type = LegacySceneTurn if body['generation_contract_version'] == 1 else SceneTurn
+            parsed_scene = scene_type.model_validate(body['scene'])
             if parsed_scene.model_dump() != body['scene']:
                 raise ValueError('scene does not match validated schema')
             if body['usage_coverage'] not in ('reported', 'missing', 'invalid', 'unobserved'):
@@ -246,6 +249,8 @@ class GeneratedSceneSnapshot:
         return json.loads(self.canonical_json)
 
     def scene(self) -> SceneTurn:
+        if self.metadata()['generation_contract_version'] != GENERATION_CONTRACT_VERSION:
+            raise GeneratedSceneMismatch('legacy generated scene cannot be consumed as new content')
         return SceneTurn.model_validate(self.metadata()['scene'])
 
     def success_usage(self) -> tuple[ModelUsage, ...]:

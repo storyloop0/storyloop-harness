@@ -6,9 +6,9 @@ from storyloop_harness.models.usage import record_model_usage
 class OfflineModel:
     async def __call__(self, messages, *, structured_model, **kwargs):
         content = structured_model.model_validate({
-            'prose': 'The dockhand coils a rope and waves you toward the arriving boat.',
+            'beats': [{'kind': 'narration', 'text': 'The dockhand coils a rope and waves you toward the arriving boat.'},
+                      {'kind': 'dialogue', 'actor_id': 'dockhand', 'text': 'The morning boat has arrived.'}],
             'participants': ['dockhand'],
-            'replies': [{'actor_id': 'dockhand', 'speech': 'The morning boat has arrived.'}],
             'options': [
                 {'label': 'Ask about the boat', 'input': 'When does the boat leave?'},
                 {'label': 'Read the notice', 'input': 'I read the notice board.'},

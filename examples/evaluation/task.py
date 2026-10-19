@@ -20,9 +20,10 @@ class Fixture:
     """Intentionally claims success even when the author rule must reject it."""
     async def __call__(self, messages, **kwargs):
         usage = SimpleNamespace(input_tokens=0, output_tokens=0)
-        record_model_usage('narrative-fixture-v1', 'scene_turn', usage)
+        record_model_usage('narrative-fixture-v2', 'scene_turn', usage)
         return SimpleNamespace(metadata={
-            'prose': 'The window breaks; an invented secret reward appears.',
+            'beats': [{'kind': 'narration',
+                       'text': 'The window breaks; an invented secret reward appears.'}],
             'interaction': 'action', 'action_id': 'break_shop_window',
             'action': {'status': 'occurred'},
         }, usage=usage)
@@ -117,8 +118,8 @@ async def task(*, item, live=False, **kwargs):
                     'harness_version': version('storyloop-harness'),
                     'agentscope_version': version('agentscope'),
                     'model_mode': 'live' if live else 'fixture',
-                    'model': getattr(delegate, 'model', 'narrative-fixture-v1'),
-                    'fixture_version': None if live else '1',
+                    'model': getattr(delegate, 'model', 'narrative-fixture-v2'),
+                    'fixture_version': None if live else '2',
                     'policy': projection.report.policy_id, 'budget': asdict(budget),
                     'projection': projection.report.to_dict(),
                     'usage': [u.to_dict() for u in outcome.model_usage],

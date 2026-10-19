@@ -50,6 +50,55 @@ Next: edit the story material in the [harbor scenario](examples/freeform), or ex
 
 The installed `storyloop-harness-demo` command (or `python -m storyloop_harness.demo`) loads its own bundled scenario without a checkout examples directory. Temporary saves are removed after the run; pass `--db story.sqlite3` to persist a save, then repeat the same `--turn-id` and `--text` to check replay. Output separates fixture invocations from provider requests (always 0); unchanged replay requires no new events and no fixture invocation. Use the harbor authoring example to edit story material.
 
+## Explicit facts and historical evidence
+
+Use the strict fact entry point when your application already knows the exact fact key and answering NPC. Add optional `facts` to a scenario's `manifest.json` (the default is an empty catalog):
+
+```json
+{
+  "facts": [
+    {
+      "id": "weather.confirmed",
+      "text": "The north wind is confirmed tonight.",
+      "known_by": ["dockhand"],
+      "disclose_to": ["player"],
+      "valid_from_tick": 0,
+      "valid_until_tick": 4
+    }
+  ]
+}
+```
+
+Each ID is unique within the package. `text` is the complete authored answer; `known_by` and `disclose_to` list actor IDs explicitly. The optional interval includes `valid_from_tick` and excludes `valid_until_tick`; omission means no time bound. Invalid IDs, actors, intervals or duplicate facts reject the package. Facts and permissions affect the package fingerprint. Lore, cards, blueprint prose, generated profiles, history and summaries never populate this catalog automatically, and the whole catalog is not sent to ordinary scene generators.
+
+```python
+from storyloop_harness import FactQuery, ScenarioPackage
+from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness.storage import SQLiteGameStore
+
+async def answer(generator):
+    package = ScenarioPackage.load("my-scenario")
+    with SQLiteGameStore("story.sqlite3") as store:
+        # Seed a new game with package.seed_game(store, "game") first.
+        session = SingleCallGameSession(
+            store, package, generator, SceneContextProjector(store, package)
+        )
+        return await session.run_fact_query(
+            "game", FactQuery("weather.confirmed", "dockhand"), "query-1"
+        )
+```
+
+Here `generator` is the application's normal generator; this method never invokes it. The caller supplies `fact_id` and `speaker_id`; player text is not classified or fuzzily matched to keys. The first version supports ordinary saves without campaign or story blueprint and requires a reachable NPC speaker. The recipient is `player`. At the current tick, both NPC knowledge and disclosure permission must pass. Missing, private, not-yet-valid and expired facts all use the same fixed unknown dialogue. Invalid query parameters and unsupported saves fail before the query writes. Answers are the authored text in a fixed dialogue wrapper; no model usage, provider calls or model fees are added by this entry point. The query does not change world values or teach other NPCs the answer.
+
+Reuse the same `turn_id` with the same query to replay the committed answer, including after an SQLite reopen; a different fact, speaker or free-narrative entry with that ID conflicts. Replay returns the saved historical answer even if today's catalog differs. Old committed turns remain readable. Pending snapshots from an older context generation cannot be committed through the new boundary. Existing database rows need no provenance rewrite: records lacking sufficient producer information receive conservative evidence.
+
+For an offline check from the repository root, run `python -m examples.fact_query --output fact-report.json`. It uses synthetic data, a temporary SQLite save that it closes and reopens, and a generator that raises if called. The JSON contains only statuses, counts, zero usage, replay equality and evidence classes. It contains no query or answer bodies. `free_narrative_semantic_quality` is `unreviewed`; the example does not score open-ended prose.
+
+Historical context now carries `evidence` with `kind`, `source_ids`, `owner_id`, `speaker_id` and optional `fact_reference`. Kinds include `grounded_answer`, `utterance`, `generated_narrative`, `generated_memory`, `unverified_summary` and `legacy_unverified`. A `grounded_answer` identifies a validated **historical** strict answer and its package/tick reference; it does not mean that answer is still valid. Source IDs show attribution, not that a source entails every sentence or that the speaker currently knows it. Generated memories and summaries can support story continuity but cannot authorize a strict answer. Ordinary free narrative remains semantically unreviewed.
+
+Custom projection readers must accept `player_history` and NPC `own_history` rows shaped as `{channel, text, tick, evidence}`, `recent_visible_beats` and `recent_player_actions` rows as `{text, evidence}`, and nonempty `player_summary` / `own_summary` as `{text, evidence}` (empty summaries remain `""`). Keep text and evidence together when clipping or budgeting. A custom checkpoint summarizer still receives `CheckpointRequest`; each `request.entries` item has evidence, and `request.previous_summary_evidence` supplies the old summary's unverified provenance. Every resulting summary remains `unverified_summary`, regardless of its wording or source IDs.
+
 ## How the runtime works
 
 ```mermaid
@@ -61,6 +110,23 @@ flowchart LR
 ```
 
 Generated prose does not automatically become a world fact. Harness handles context, generation, validation and event execution; your application supplies model credentials, storage selection and pricing. `TurnEngine.project_context` lets you inspect requests without model calls or writes.
+
+Scene models now return one ordered content sequence:
+
+```json
+{
+  "beats": [
+    {"kind": "narration", "text": "The dockhand sets down the rope."},
+    {"kind": "dialogue", "actor_id": "dockhand", "text": "I have not confirmed tonight's wind direction."}
+  ],
+  "interaction": "speech",
+  "participants": ["dockhand"]
+}
+```
+
+`NarrativeTurn`, `SourceNarrativeTurn`, and custom generator `SceneTurn` require nonempty `beats`. Custom generators must construct this shape explicitly. Old model output with `prose` / `replies`, including payloads mixing those fields with `beats`, is rejected. Interactive and novel presentation derive their text from the same sequence; accepted visible beats commit in order. Invalid content fails before commit without deletion or an automatic content retry. Optional uncertain generation protection may leave a marker requiring operator action. Previously committed turns replay stored events; an uncommitted old snapshot cannot resume as new content.
+
+The automatic repetition rule covers one exact case: normalize a whole dialogue beat with Unicode NFKC and casefold, retain only Unicode alphanumerics, then reject it if its normalized length is at least 8 and it appears inside one similarly normalized narration beat. It does not compare dialogue beats or detect short utterances, repetition split across narration beats, paraphrases, or factual errors.
 
 **Status:** active incubation · MIT. APIs, configuration and saved formats may change without compatibility or migration support. Character views do not guarantee secret isolation; SQLite provides per-commit persistence, while applications own cross-process coordination, and a turn is not guaranteed to be atomic.
 
@@ -243,11 +309,11 @@ python -m examples.evaluation --langfuse --output result.json
 ```
 
 - Default execution needs no keys or network. Two isolated SQLite cases check clue retention, projection scope, private-field placement, authored state effects and replay. Failed checks or task/evaluator errors exit 1; JSON includes versions, policy/budget, timing and usage, with cost unknown without pricing.
-- The default `contracts` policy comparison runs three fixed authored action cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. An accepted authored action uses canonical author text for the final narration. The separate `narrative` suite runs three free speech cases against the same four policies; it tests actual player-visible speech without assuming narration or event hashes match across policies. Both suites test runtime contracts only. The fixture reports no provider tokens, so cost is `null` even with pricing. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using Harness's default policy.
+- The default `contracts` policy comparison runs three fixed authored action cases against four policies, using an isolated SQLite save and the same deterministic model fixture for each pair. Its JSON records source IDs, clue checks, estimated request tokens, projection/turn timings and authoritative results. An accepted authored action uses canonical author text for the final narration. The separate `narrative` suite runs three free speech cases against the same four policies; it tests actual player-visible speech without assuming narration or event hashes match across policies. In both suites, `passed` means experiment execution passed; `acceptance.runtime_matrix` identifies the runtime matrix result. Each row's `acceptance` separates structural content, the bounded exact repetition rule above, and `semantic_quality: unreviewed`. Failed calls without verifiable output mark structure and repetition `unavailable`. A clue seen by the player does not imply the dockhand knows that fact; the fixture keeps player recollection in narration and the dockhand's uncertain answer in dialogue. The fixture reports no provider tokens, so cost is `null` even with pricing. These offline structural results do not establish real-model narrative quality, provider billing or Langfuse ingestion. Platform currently continues using Harness's default policy.
 
   `--review-output review.json` is an explicit local content export for the `narrative` suite only. The ordinary metrics report omits player text, reference facts, narration and ratings by default. The review packet contains the first final player-visible narration, each case's public synthetic reference facts, selected coverage and safe contract, token, cost and timing evidence. Its `run_id` matches the metrics report and each metric row; `narration_sha256` hashes the exact UTF-8 narration. A failed preparation has `null` narration and `not_available` status. A later replay or cleanup failure retains the first narration with failed checks. The output may contain player or story text, including generated content; inspect it before sharing. Neither flag enables paid calls. A separate `--live` with one explicit case and policy is required for provider use.
 
-  Each item starts with `status: unreviewed`, an empty reviewer, and `null` scores for factual grounding, response to the player's request, and coherence. For each dimension, enter 0 when it does not meet the criterion, 1 when it partly meets it, or 2 when it meets it; record a short quoted excerpt or reason in `evidence_note` and identify the reviewer. For factual grounding, check claims against the public reference facts and whether missing context is admitted. For request response, check whether the reply addresses the player's question. For coherence, check whether the final speech reads consistently and clearly. `null` means not reviewed, never zero. The tool does not import scores, average them, rank policies, run an automatic judge or upload the packet. Coverage names selected, completed and excluded case/policy pairs; compare only selected pairs and keep unknown costs unknown. No real quality improvement is claimed from these fixtures.
+  Each item starts with `status: unreviewed`, an empty reviewer, and `null` scores for factual grounding, response to the player's request, coherence, and duplicate or paraphrased answers. For each dimension, enter 0 when it does not meet the criterion, 1 when it partly meets it, or 2 when it meets it; record a short quoted excerpt or reason in `evidence_note` and identify the reviewer. For factual grounding, check claims against the public reference facts and whether missing context is admitted. For request response, check whether the reply addresses the player's question. For coherence, check whether the final speech reads consistently and clearly. For repetition, check whether narration restates the dialogue answer. `null` means not reviewed, never zero. The tool does not import scores, average them, rank policies, run an automatic judge or upload the packet. Coverage names selected, completed and excluded case/policy pairs; compare only selected pairs and keep unknown costs unknown. No real quality improvement is claimed from these fixtures.
 
   Optional `--pricing` reads a local JSON snapshot and estimates only reported attempt usage. It does not enable paid calls by itself. These are **synthetic rates for testing, not provider quotes**:
 
@@ -311,11 +377,11 @@ flowchart TD
     Rejected --> Commit
     Validate --> Commit[Commit adjudicated events with expected version]
     Commit -->|Store conflict or error| StoreError[Propagate store error]
-    Commit --> Work[Drain ready work: speech and scenario cues]
+    Commit --> Work[Drain ready work: character speech history and authorized overhearing]
     Work --> Output[Visible story and resulting snapshot]
 ```
 
-An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Character replies are generated together and delivered through `single_npc_reply` work; each character does not run a ReAct loop.
+An ordinary `single_call` turn uses one structured scene generation stage, followed by deterministic work. Transport retries and other scheduled generation tasks can make additional model requests. Accepted visible beats commit in order with the player event. Later `single_npc_reply` work records each character's own speech history and authorized overhearing; it does not deliver dialogue to the player again. Each character does not run a ReAct loop.
 
 Authored actions are adjudicated against scenario rules and use the authored result as canonical scene prose. Rejections replace prose and discard speculative consequences. Open actions can only change declared mutable fields. Eligible numeric status changes commit with the player event and are not reapplied on replay; the application owns account billing. Free-form generated text is not guaranteed factually consistent. Store errors and later work failures need caller handling: the whole turn is not atomic, and failure before its first commit can require another model call.
 

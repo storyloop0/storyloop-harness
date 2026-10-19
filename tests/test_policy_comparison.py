@@ -129,6 +129,7 @@ def test_runner_requires_exact_boolean_replay_check(mutation, expected_error):
             row['checks']['replay'] = 1 if mutation == 'nonbool' else False
         if mutation == 'false':
             row['passed'] = False
+            row['acceptance']['runtime_contract'] = 'failed'
         return row
 
     report = run_local(task_fn=altered, case_ids=('old-clue',),
@@ -215,3 +216,87 @@ def test_actual_replay_cancellation_writes_partial_report_and_cli_returns_130(
     assert 'PRIVATE_SENTINEL' not in json.dumps(report)
     monkeypatch.setattr(__main__, 'run_local', lambda **kwargs: (_ for _ in ()).throw(original))
     assert __main__.main([]) == 130
+
+
+@pytest.mark.parametrize('interruption', ['exception', 'cancel'])
+def test_emitted_forgery_cannot_claim_success_or_replace_selected_pair(
+        tmp_path, interruption):
+    from examples.policy_comparison.runner import run_local
+    baseline = run_local(case_ids=('old-clue',),
+                         policy_ids=('history-recent-v1',))['rows'][0]
+    output = tmp_path / 'report.json'
+    original = asyncio.CancelledError('PRIVATE_CANCEL')
+
+    async def forged(*, evidence_sink, **kwargs):
+        row = deepcopy(baseline)
+        row['case_id'] = 'forged-case'
+        row['policy_id'] = 'forged-policy'
+        row['passed'] = True
+        row['acceptance']['semantic_quality'] = 'passed'
+        row['result']['state_sha256'] = 'forged-result'
+        evidence_sink(row)
+        if interruption == 'cancel':
+            raise original
+        raise RuntimeError('PRIVATE_FAILURE')
+
+    if interruption == 'cancel':
+        with pytest.raises(asyncio.CancelledError) as caught:
+            run_local(task_fn=forged, case_ids=('old-clue',),
+                      policy_ids=('history-recent-v1',), output_path=output)
+        assert caught.value is original
+        report = json.loads(output.read_text(encoding='utf-8'))
+        assert report['status'] == 'cancelled'
+    else:
+        report = run_local(task_fn=forged, case_ids=('old-clue',),
+                           policy_ids=('history-recent-v1',), output_path=output)
+    assert report['passed'] is False
+    assert report['coverage']['completed_pairs'] == [
+        {'case_id': 'old-clue', 'policy_id': 'history-recent-v1'}]
+    row = report['rows'][0]
+    assert row['case_id'] == 'old-clue' and row['policy_id'] == 'history-recent-v1'
+    assert row['passed'] is False
+    assert row['acceptance']['runtime_contract'] == 'failed'
+    assert row['acceptance']['structural_content'] == 'unavailable'
+    assert row['acceptance']['bounded_duplicate_check'] == 'unavailable'
+    assert row['acceptance']['semantic_quality'] == 'unreviewed'
+    assert 'result' not in row
+    assert 'forged-result' not in json.dumps(report)
+
+
+def test_emitted_complete_row_after_failure_keeps_validated_result_but_fails_runtime():
+    from examples.policy_comparison.runner import run_local
+    baseline = run_local(case_ids=('old-clue',),
+                         policy_ids=('history-recent-v1',))['rows'][0]
+
+    async def failed_after_turn(*, evidence_sink, **kwargs):
+        row = deepcopy(baseline)
+        row['checks'].pop('same_authoritative_result', None)
+        row['acceptance']['semantic_quality'] = 'passed'
+        evidence_sink(row)
+        raise RuntimeError('PRIVATE_CLEANUP')
+
+    report = run_local(task_fn=failed_after_turn, case_ids=('old-clue',),
+                       policy_ids=('history-recent-v1',))
+    row = report['rows'][0]
+    assert report['passed'] is row['passed'] is False
+    assert row['result'] == baseline['result']
+    assert row['acceptance']['runtime_contract'] == 'failed'
+    assert row['acceptance']['structural_content'] == 'passed'
+    assert row['acceptance']['bounded_duplicate_check'] == 'passed'
+    assert row['acceptance']['semantic_quality'] == 'unreviewed'
+
+
+def test_malformed_emitted_metadata_does_not_break_failure_report(tmp_path):
+    from examples.policy_comparison.runner import run_local
+
+    async def malformed(*, case, policy, evidence_sink, **kwargs):
+        evidence_sink({'case_id': case['id'], 'policy_id': policy.value,
+                       'metadata': {'invalid': object()}, 'passed': True})
+        raise RuntimeError('PRIVATE_FAILURE')
+
+    output = tmp_path / 'report.json'
+    report = run_local(task_fn=malformed, case_ids=('old-clue',),
+                       policy_ids=('history-recent-v1',), output_path=output)
+    assert report == json.loads(output.read_text(encoding='utf-8'))
+    assert report['passed'] is report['rows'][0]['passed'] is False
+    assert report['rows'][0]['metadata'] == {'pricing': None}

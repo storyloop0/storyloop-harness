@@ -24,11 +24,14 @@ class HarborFixture:
         request = json.loads(content)
         text = request['player_action']
         if text in {'打破橱窗', 'break the window'}:
-            result = {'prose': '你打破了店铺橱窗。', 'interaction': 'action',
+            result = {'beats': [{'kind': 'narration', 'text': '你打破了店铺橱窗。'}],
+                      'interaction': 'action',
                       'action_id': 'break_shop_window', 'action': {'status': 'occurred'}}
         elif text in {'你好', 'hello'}:
-            result = {'prose': '码头工向你挥手。', 'participants': ['dockhand'],
-                      'replies': [{'actor_id': 'dockhand', 'speech': '今天的船已经到港。'}]}
+            result = {'beats': [{'kind': 'narration', 'text': '码头工向你挥手。'},
+                                {'kind': 'dialogue', 'actor_id': 'dockhand',
+                                 'text': '今天的船已经到港。'}],
+                      'participants': ['dockhand']}
         else:
             raise ValueError('Offline fixture accepts: 打破橱窗 / break the window / 你好 / hello')
         usage = SimpleNamespace(input_tokens=0, output_tokens=0)

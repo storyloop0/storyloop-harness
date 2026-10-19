@@ -42,9 +42,9 @@ def test_snapshot_codec_detaches_and_detects_corruption():
         nearby_actor_ids=('dockhand',), preference_hash='3' * 64,
         scene=scene, success_usage=(), usage_coverage='unobserved',
     )
-    record.scene().prose = 'mutated'
+    record.scene().beats[0].text = 'mutated'
     assert record.scene().prose == scene.prose
-    record.metadata()['scene']['prose'] = 'mutated'
+    record.metadata()['scene']['beats'][0]['text'] = 'mutated'
     assert record.scene().prose == scene.prose
     with pytest.raises(GeneratedSceneCorrupt):
         GeneratedSceneSnapshot.from_storage(record.canonical_json, '0' * 64)

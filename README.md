@@ -50,6 +50,55 @@ python3 -m venv .venv
 
 安装后的 `storyloop-harness-demo`（或 `python -m storyloop_harness.demo`）从包内读取独立演示剧本，无需仓库的 examples 目录。默认临时存档在运行结束后移除；显式指定 `--db story.sqlite3` 可持久保存，再运行相同的 `--turn-id` 和 `--text` 检查重放。输出分别显示离线夹具调用数和供应商请求数（始终为 0）；只有没有新事件且没有夹具调用时才标为 unchanged replay。修改故事素材仍使用港口作者示例。
 
+## 显式事实与历史证据
+
+应用已经确定事实键和回答角色时，可使用严格事实入口。剧本 `manifest.json` 可选填 `facts`，缺省为空：
+
+```json
+{
+  "facts": [
+    {
+      "id": "weather.confirmed",
+      "text": "今晚已确认是北风。",
+      "known_by": ["dockhand"],
+      "disclose_to": ["player"],
+      "valid_from_tick": 0,
+      "valid_until_tick": 4
+    }
+  ]
+}
+```
+
+同一剧本中的 `id` 必须唯一；`text` 是作者登记的完整答案，`known_by` 和 `disclose_to` 显式列出角色 ID。可选有效期包含 `valid_from_tick`，不包含 `valid_until_tick`；省略即无时间限制。非法 ID、角色、区间或重复事实会使剧本加载失败。事实及权限参与剧本指纹。世界书、角色卡、蓝图散文、生成档案、历史和摘要不会自动导入清单；普通场景生成请求也不会收到整份清单。
+
+```python
+from storyloop_harness import FactQuery, ScenarioPackage
+from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness.storage import SQLiteGameStore
+
+async def answer(generator):
+    package = ScenarioPackage.load("my-scenario")
+    with SQLiteGameStore("story.sqlite3") as store:
+        # 新游戏先调用 package.seed_game(store, "game")。
+        session = SingleCallGameSession(
+            store, package, generator, SceneContextProjector(store, package)
+        )
+        return await session.run_fact_query(
+            "game", FactQuery("weather.confirmed", "dockhand"), "query-1"
+        )
+```
+
+这里的 `generator` 是应用原有的生成器；此方法绝不调用它。调用方明确给出 `fact_id` 和 `speaker_id`；运行时不对玩家自然语言做自动分类或模糊匹配。首版只支持没有 campaign、没有 story blueprint 的普通存档，回答 NPC 必须当前可接触，接收者固定为 `player`。当前 tick 下，NPC 知情和向玩家披露的许可都必须成立。不存在、不可披露、未生效和已过期的事实返回完全相同的固定未知对白。非法参数和不支持的存档在查询写入前报错。已知答案由作者原文和固定对白包装组成；严格入口不增加模型调用、模型用量或服务费用，也不改变世界数值或让其他 NPC 自动知情。
+
+用相同 `turn_id` 和查询可重放已提交的回答，SQLite 关闭重开后也如此；同 ID 换事实、换角色或换自由叙事入口会冲突。重放读取保存时的答案，不按今日清单重算。旧已提交回合仍可读取；旧上下文版本的未提交生成快照不能越过新版边界提交。已有数据库行无需批量改写来源信息：生产路径信息不足时保守标级。
+
+在仓库根目录运行 `python -m examples.fact_query --output fact-report.json` 可做离线检查。示例只用合成数据、会关闭并重开临时 SQLite 存档，生成器一旦被调用便报错。JSON 仅含状态、计数、零用量、重放一致性和证据类别，不含查询或答案正文。`free_narrative_semantic_quality` 为 `unreviewed`，不代表已评测自由叙事语义质量。
+
+历史上下文现在附带 `evidence`，字段为 `kind`、`source_ids`、`owner_id`、`speaker_id` 和可选 `fact_reference`。等级包括 `grounded_answer`、`utterance`、`generated_narrative`、`generated_memory`、`unverified_summary`、`legacy_unverified`。`grounded_answer` 仅表示某次经过验证的**历史**严格回答，并保留剧本及当时 tick 的引用；不能证明现在仍然有效。source ID 证明来源归属，不证明来源支持自然语言中的每个断言，也不证明角色此刻知情。生成记忆和摘要可辅助故事连续性，不能授权严格事实回答；普通自由叙事的语义质量仍未评阅。
+
+自定义投影读取器需适配新形状：`player_history`、NPC `own_history` 的每行是 `{channel, text, tick, evidence}`；`recent_visible_beats` 和 `recent_player_actions` 每行是 `{text, evidence}`；非空的 `player_summary` / `own_summary` 是 `{text, evidence}`，空摘要仍是 `""`。裁剪及预算筛选时应让正文与证据同步。自定义摘要回调仍接收 `CheckpointRequest`，其中 `request.entries` 的每项含证据，`request.previous_summary_evidence` 给出旧摘要的未核实来源。无论摘要写成什么语气，其结果始终是 `unverified_summary`。
+
 ## 运行时如何工作
 
 ```mermaid
@@ -61,6 +110,23 @@ flowchart LR
 ```
 
 生成的叙述不自动成为世界事实。Harness 负责上下文、生成、校验和事件执行；你的应用提供模型凭据、存储选型和价格策略。`TurnEngine.project_context` 可在不调用模型、不写入存储的情况下检查请求。
+
+场景模型现在只提交一份有序内容，例如：
+
+```json
+{
+  "beats": [
+    {"kind": "narration", "text": "码头工放下缆绳。"},
+    {"kind": "dialogue", "actor_id": "dockhand", "text": "我还没有确认今晚的风向。"}
+  ],
+  "interaction": "speech",
+  "participants": ["dockhand"]
+}
+```
+
+`NarrativeTurn`、`SourceNarrativeTurn` 和自定义生成器使用的 `SceneTurn` 都要求非空 `beats`；自定义生成器也应显式构造该结构。旧模型输出 `prose` / `replies`，以及与 `beats` 混用的输出，会被拒绝。运行时从同一序列派生互动模式的场景/对白片段与小说模式的连续阅读文本，并按原顺序持久记录。模型内容校验失败时在提交前报错，不删句也不为内容错误自动追加请求；启用不确定生成保护时，失败后可能保留需人工处理的标记。已经提交的旧版本回合仍按原事件重放，旧版未提交快照不能当作新版内容继续生成。
+
+自动重复检查只拦截一种明确情况：对对白全文做 Unicode NFKC、casefold 并仅保留 Unicode 字母和数字后，长度至少为 8，且该全文出现在**一条**同样归一化的叙述片段内。它不比较两条对白，也不检查短句、跨叙述片段重复或换句话复述；事实是否正确也未自动评阅。
 
 **状态：** 持续孵化中 · MIT。API、配置和存档格式可能直接调整，不保证兼容或迁移。角色视角不是秘密的硬隔离；SQLite 提供单次提交的持久化，跨进程协调仍由应用负责，整个回合不保证原子事务。
 
@@ -240,11 +306,11 @@ python -m examples.evaluation --langfuse --output result.json
 ```
 
 - 默认无需密钥或网络。两个独立 SQLite 案例检查线索保留、投影范围、私有字段归属、作者状态效果和重放。检查失败或任务/评估器异常退出码为 1；JSON 包含版本、策略/预算、耗时和用量，未提供价格时成本为未知。
-- 默认 `contracts` 策略对照使用三个固定作者动作案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态。接受的作者动作采用作者定义的规范叙述，不能用来比较模型写出的文案。独立的 `narrative` 组使用三个自由对话案例 × 四种策略，验证真正玩家可见的 speech；不同策略的叙述及事件哈希不必相同。两个组的自动通过仅表示运行时契约满足。fixture 没有报告服务商 Token，即使传入价格，费用也为 `null`。结果不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
+- 默认 `contracts` 策略对照使用三个固定作者动作案例 × 四种策略，每组独立 SQLite 与同一确定性模型 fixture。JSON 记录来源 ID、线索检查、估算请求 Token、投影/回合耗时及权威状态。接受的作者动作采用作者定义的规范叙述，不能用来比较模型写出的文案。独立的 `narrative` 组使用三个自由对话案例 × 四种策略，验证真正玩家可见的 speech；不同策略的叙述及事件哈希不必相同。两个组的 `passed` 仅表示实验执行通过，包含运行时矩阵及可选导出；报告 `acceptance.runtime_matrix` 单独标出运行时矩阵结果。每行 `acceptance` 分开标出结构内容、上述有界原句检查和 `semantic_quality: unreviewed`；失败且没有可验证输出时，结构及重复检查为 `unavailable`。已知玩家线索不代表码头工知道同一事实，离线 fixture 将玩家回忆留在叙述，将角色不确定回答留在对白。fixture 没有报告服务商 Token，即使传入价格，费用也为 `null`。结果不代表真实模型叙事质量、供应商计费或 Langfuse 接收。Platform 当前继续使用 Harness 默认策略。
 
   `--review-output review.json` 仅对 `narrative` 组显式导出本地正文。普通指标报告默认不含玩家输入、参考事实、叙述和评分。评阅包包含首次回合最终玩家可见叙述、各案例公开合成参考事实，以及选中范围、契约、Token、费用和耗时的安全证据。`run_id` 与指标报告及每行一致；`narration_sha256` 对准确的 UTF-8 叙述计算哈希。准备失败时叙述为 `null`、状态为 `not_available`；随后重放或清理失败时保留首次叙述并标出失败检查。文件可能含玩家或故事正文，包括模型生成内容，分享前请自行检查。上述选项均不启用付费调用；只有另加 `--live` 并明确选一个案例和策略才调用服务商。
 
-  每项初始 `status: unreviewed`、评阅人为空，事实依据、回应玩家意图、表达连贯性三维分数均为 `null`。每维 0 表示不满足、1 表示部分满足、2 表示满足；请填写 `evidence_note` 中的短引文或理由及 `reviewer`。事实依据核对公开参考事实和信息不足时的表达；回应意图看是否回答玩家问题；连贯性看最终对话是否清楚一致。`null` 表示未评阅，不能当作 0。工具不导入、平均、排序评分，不做自动评审或上传。覆盖率区分选中、完成与排除组合；只比较选中组合，未知费用保持未知。此 fixture 不宣称叙事质量改善。
+  每项初始 `status: unreviewed`、评阅人为空，事实依据、回应玩家意图、表达连贯性、重复/改写四维分数均为 `null`。每维 0 表示不满足、1 表示部分满足、2 表示满足；请填写 `evidence_note` 中的短引文或理由及 `reviewer`。事实依据核对公开参考事实和信息不足时的表达；回应意图看是否回答玩家问题；连贯性看最终对话是否清楚一致；重复/改写检查叙述是否再次表达对白回答。`null` 表示未评阅，不能当作 0。工具不导入、平均、排序评分，不做自动评审或上传。覆盖率区分选中、完成与排除组合；只比较选中组合，未知费用保持未知。此 fixture 不宣称叙事质量改善。
 
   可选的 `--pricing` 读取本地 JSON 费率快照，仅估算实际报告的尝试用量；它本身不会启用付费调用。以下数值是**合成费率，仅供测试，不是供应商报价**：
 
@@ -308,11 +374,11 @@ flowchart TD
     Rejected --> Commit
     Validate --> Commit[按预期版本提交裁决后的事件]
     Commit -->|存储冲突或异常| StoreError[向调用方传递存储错误]
-    Commit --> Work[处理就绪工作：角色发言与场景提示]
+    Commit --> Work[处理就绪工作：角色自己的发言历史与授权旁听]
     Work --> Output[可见故事与更新后的快照]
 ```
 
-普通 `single_call` 回合采用一次结构化场景生成阶段，再执行确定性工作。传输重试和其他定时生成任务可能产生额外模型请求。角色回复一起生成，通过 `single_npc_reply` 工作交付；每个角色没有独立的 ReAct 循环。
+普通 `single_call` 回合采用一次结构化场景生成阶段，再执行确定性工作。传输重试和其他定时生成任务可能产生额外模型请求。获准的可见片段随玩家事件按顺序提交；后续 `single_npc_reply` 工作只记录角色自己的发言历史与授权旁听，不再次交付玩家可见对白。每个角色没有独立的 ReAct 循环。
 
 预设动作按剧本规则裁决，成功正文使用作者声明的结果；拒绝时替换正文并丢弃推测的后果。开放动作只能修改声明的可变字段。合格的数值状态变化与玩家事件一起提交，重复回合不会再应用一次；积分账务由应用负责。自由生成的文字仍不保证句句符合事实。存储异常或后续工作失败需要调用方处理；整个回合不保证原子事务，首次提交前失败可能重新调用模型。
 

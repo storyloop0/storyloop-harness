@@ -70,7 +70,8 @@ def test_checkpoint_compresses_complete_versions_and_keeps_scoped_sources(tmp_pa
                                 (Effect(('actors', 'guard', 'location'), 'elsewhere'),))
             store.commit('game', store.load('game').version, change, (), ())
             projected = SceneContextProjector(store, package).project(store.load('game'), 'Guide')
-            assert 'GUIDE_SECRET' in projected.request['npc_contexts'][0]['own_summary']
+            assert 'GUIDE_SECRET' in projected.request['npc_contexts'][0]['own_summary']['text']
+            assert projected.request['npc_contexts'][0]['own_summary']['evidence']['kind'] == 'unverified_summary'
             assert 'GUARD_SECRET' not in str(projected.request)
             assert store.load('game').data['actors']['guard']['location'] == 'elsewhere'
             assert 'guard' not in projected.request['nearby_people']

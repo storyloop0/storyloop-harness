@@ -32,6 +32,14 @@ def a_turn(**changes):
         ],
     }
     result.update(changes)
+    # Explicit test-fixture migration: callers describe simple narration then
+    # speech; runtime/custom generators receive only the canonical beat list.
+    prose = result.pop('prose')
+    replies = result.pop('replies')
+    if 'beats' not in result:
+        result['beats'] = [{'kind': 'narration', 'text': prose}] + [
+            {'kind': 'dialogue', 'actor_id': item['actor_id'], 'text': item['speech']}
+            for item in replies]
     return result
 
 def source_package():

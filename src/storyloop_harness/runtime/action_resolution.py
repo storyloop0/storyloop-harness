@@ -1,5 +1,5 @@
 """Authoritative action validation before narrative consequences are persisted."""
-from storyloop_harness.agents.scene_schema import ProposedAction, SceneTurn
+from storyloop_harness.agents.scene_schema import NarrationBeat, ProposedAction, SceneTurn
 from storyloop_harness.core.actions import _read
 from storyloop_harness.core.contracts import Effect, Snapshot
 from storyloop_harness.core.open_actions import validate_open_effects
@@ -43,8 +43,9 @@ def resolve_action(before: Snapshot, package, plan: SceneTurn) -> SceneTurn:
         reason = '这个行动的状态变化与自动结算字段冲突。'
     if reason is not None:
         return plan.model_copy(update={
-            'prose': reason, 'action': ProposedAction(status='blocked', player_result=reason),
-            'replies': [], 'memories': [], 'status_changes': [], 'options': [],
+            'beats': [NarrationBeat(kind='narration', text=reason)],
+            'action': ProposedAction(status='blocked', player_result=reason),
+            'memories': [], 'status_changes': [], 'options': [],
             'encounters': [], 'milestones_fulfilled': [],
         })
     action = ProposedAction(status='occurred', player_result=sensory or proposal.player_result,
@@ -52,5 +53,8 @@ def resolve_action(before: Snapshot, package, plan: SceneTurn) -> SceneTurn:
     # Known rules retain only their ID and canonical result in the resolved plan.
     # Trusted authored values never pass through the model's scalar proposal schema.
     # Authored results are the canonical action scene; a model cannot negate them.
-    prose = sensory if rule is not None else plan.prose
-    return plan.model_copy(update={'action': action, 'prose': prose})
+    if rule is not None:
+        return plan.model_copy(update={'action': action,
+            'beats': [NarrationBeat(kind='narration', text=sensory)],
+            'memories': [], 'encounters': []})
+    return plan.model_copy(update={'action': action})

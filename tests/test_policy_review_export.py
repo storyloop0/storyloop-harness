@@ -32,7 +32,8 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
             self.prose = prose
 
         async def __call__(self, messages, **kwargs):
-            return SimpleNamespace(metadata={'prose': self.prose, 'interaction': 'speech',
+            return SimpleNamespace(metadata={'beats': [{'kind': 'narration', 'text': self.prose}],
+                                             'interaction': 'speech',
                                              'participants': ['dockhand']})
 
     from pytest import MonkeyPatch
@@ -53,8 +54,9 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
     assert outcomes[2].snapshot == outcomes[3].snapshot
     report, packet, _ = runs[0]
     item = packet['items'][0]
-    assert packet['schema_version'] == 1 and packet['rubric_id'] == 'narrative-review-v1'
-    assert set(packet['rubric']) == {'factual_grounding', 'request_response', 'coherence'}
+    assert packet['schema_version'] == 1 and packet['rubric_id'] == 'narrative-review-v2'
+    assert set(packet['rubric']) == {'factual_grounding', 'request_response', 'coherence',
+                                    'duplicate_paraphrase'}
     assert all(set(dimension['anchors']) == {'0', '1', '2'}
                for dimension in packet['rubric'].values())
     assert packet['dataset_id'] == report['dataset_id']
@@ -69,9 +71,12 @@ def test_opt_in_exports_real_first_outcome_and_keeps_metrics_private(tmp_path):
     assert item['narration_sha256'] == sha256(first.encode('utf-8')).hexdigest()
     assert item['player_text'].startswith('码头工，请提醒我')
     assert item['reference_facts'] and item['status'] == 'unreviewed'
+    assert item['acceptance'] == report['rows'][0]['acceptance']
+    assert item['acceptance']['semantic_quality'] == 'unreviewed'
     assert item['reviewer'] == ''
     assert {key: value['score'] for key, value in item['ratings'].items()} == {
-        'factual_grounding': None, 'request_response': None, 'coherence': None}
+        'factual_grounding': None, 'request_response': None, 'coherence': None,
+        'duplicate_paraphrase': None}
     assert item['cost'] is None and report['rows'][0]['cost'] is None
     for current_report, _, current_metrics in runs:
         assert first not in current_metrics and second not in current_metrics
@@ -104,8 +109,30 @@ def test_preparation_failure_has_no_review_text(tmp_path):
     item = json.loads((tmp_path / 'review.json').read_text(encoding='utf-8'))['items'][0]
     assert report['passed'] is False
     assert item['status'] == 'not_available' and item['narration'] is None
+    assert item['acceptance']['structural_content'] == 'unavailable'
+    assert item['acceptance']['bounded_duplicate_check'] == 'unavailable'
     assert item['narration_sha256'] is None
     assert 'PRIVATE_PREPARATION' not in json.dumps(item, ensure_ascii=False)
+
+
+def test_emitted_malformed_failure_does_not_export_forged_acceptance(tmp_path):
+    async def failed(*, case, policy, evidence_sink, review_sink, **kwargs):
+        review_sink({'narration': 'Visible first answer.'})
+        evidence_sink({'case_id': case['id'], 'policy_id': policy.value,
+                       'passed': True, 'acceptance': {'semantic_quality': 'passed'},
+                       'checks': {'replay': True}, 'result': {'world_sha256': 'forged'}})
+        raise RuntimeError('PRIVATE_FAILURE')
+
+    report = _one(task_fn=failed, review_output_path=tmp_path / 'review.json')
+    item = json.loads((tmp_path / 'review.json').read_text(encoding='utf-8'))['items'][0]
+    assert report['passed'] is item['passed'] is False
+    assert item['narration'] == 'Visible first answer.'
+    assert item['acceptance'] == report['rows'][0]['acceptance']
+    assert item['acceptance']['runtime_contract'] == 'failed'
+    assert item['acceptance']['structural_content'] == 'unavailable'
+    assert item['acceptance']['bounded_duplicate_check'] == 'unavailable'
+    assert item['acceptance']['semantic_quality'] == 'unreviewed'
+    assert 'result' not in report['rows'][0]
 
 
 def test_replay_failure_keeps_first_text_and_failed_contract(tmp_path, monkeypatch):
@@ -172,7 +199,8 @@ def test_cleanup_failure_keeps_first_text_and_original_error(
     assert report['passed'] is False
     assert report['rows'][0]['error'] == {'type': expected_error}
     assert item['error'] == report['rows'][0]['error']
-    assert item['narration'] == '码头工说：现有线索不足，我不能确定答案。'
+    assert item['narration'] == ('码头工停下手里的活，回应你的问题。\n\n'
+                                 '【码头工】\n现有线索不足，我不能确定答案。')
     assert item['narration_sha256'] == sha256(item['narration'].encode('utf-8')).hexdigest()
     assert item['passed'] is False and item['status'] == 'unreviewed'
     assert len(temporary_paths) == 1

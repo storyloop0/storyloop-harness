@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry
+from storyloop_harness.core.contracts import AgentContextCheckpoint, AgentContextEntry, ContextEvidence
 from storyloop_harness.core.store_port import GameStore
 from storyloop_harness.world.scenario import ScenarioPackage
 
@@ -16,6 +16,7 @@ class CheckpointRequest:
     scenario_version: str
     previous_summary: str
     entries: tuple[AgentContextEntry, ...]
+    previous_summary_evidence: ContextEvidence = ContextEvidence(kind='unverified_summary')
 
 
 CheckpointSummarizer = Callable[[CheckpointRequest], Awaitable[str]]
@@ -55,12 +56,15 @@ class CheckpointLifecycle:
         if not covered:
             return False
         request = CheckpointRequest(game_id, actor_id, self.package.package_id,
-                                    self.package.version, current.summary, covered)
+                                    self.package.version, current.summary, covered,
+                                    ContextEvidence('unverified_summary', current.source_ids, actor_id))
         summary = await self.summarize(request)
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 1200:
             raise ValueError('checkpoint summarizer returned an invalid summary')
         checkpoint = AgentContextCheckpoint(covered[-1].state_version, summary,
                                             self.package.package_id, self.package.version,
-                                            tuple(entry.entry_id for entry in covered))
+                                            tuple(entry.entry_id for entry in covered),
+                                            ContextEvidence('unverified_summary',
+                                                tuple(entry.entry_id for entry in covered), actor_id))
         self.store.save_agent_context_checkpoint(game_id, actor_id, current.through_version, checkpoint)
         return True

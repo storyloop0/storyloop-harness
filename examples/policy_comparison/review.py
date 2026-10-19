@@ -4,8 +4,8 @@ import json
 import os
 from pathlib import Path
 
-RUBRIC_ID = 'narrative-review-v1'
-DIMENSIONS = ('factual_grounding', 'request_response', 'coherence')
+RUBRIC_ID = 'narrative-review-v2'
+DIMENSIONS = ('factual_grounding', 'request_response', 'coherence', 'duplicate_paraphrase')
 RUBRIC = {
     'factual_grounding': {
         'question': 'Are factual claims supported by visible clues, or is uncertainty stated?',
@@ -22,6 +22,11 @@ RUBRIC = {
         'anchors': {'0': 'Incoherent or contradictory',
                     '1': 'Partly clear or uneven',
                     '2': 'Clear and consistent'}},
+    'duplicate_paraphrase': {
+        'question': 'Does narration repeat or paraphrase a dialogue answer? Is the answer shown once?',
+        'anchors': {'0': 'Repeated or paraphrased answer',
+                    '1': 'Possible overlap needing closer review',
+                    '2': 'Answer presented once without paraphrase'}},
 }
 SAFE_METADATA = ('dataset_id', 'model_mode', 'policy_id', 'started_at',
                  'timing_version', 'pricing', 'model', 'stream', 'tool_choice_policy',
@@ -71,6 +76,7 @@ def make_packet(*, dataset_id, run_id, coverage, cases, rows, captured):
             'metadata': {key: row['metadata'][key] for key in SAFE_METADATA
                          if key in row.get('metadata', {})},
             'passed': row['passed'],
+            'acceptance': row['acceptance'],
             'checks': {key: value for key, value in row.get('checks', {}).items()
                        if type(value) is bool},
             'error': row.get('error'),

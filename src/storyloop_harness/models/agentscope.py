@@ -123,6 +123,13 @@ class CompatibleOpenAIChatModel(OpenAIChatModel):
             return await self._generate_structured_output(messages, structured_model, **kwargs)
 
     async def _generate_structured_output(self, messages: list, structured_model: type, **kwargs: object):
+        from storyloop_harness.agents.scene_schema import SceneContent
+        if isinstance(structured_model, type) and issubclass(structured_model, SceneContent):
+            # Scene contract rejection must end this invocation. AgentScope's
+            # default strategy ladder otherwise sends the invalid scene again
+            # through auto/none, even with max_retries=0. Explicit tool choice
+            # uses one strategy while retaining normal transient-error policy.
+            kwargs.setdefault('tool_choice', ToolChoice(mode='generate_structured_output'))
         messages = self._messages(messages)
         with self.telemetry.span(
             f"model:{self.task}", {"task": self.task,
