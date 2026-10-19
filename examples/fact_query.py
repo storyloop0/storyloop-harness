@@ -88,7 +88,7 @@ async def run() -> dict[str, object]:
             package.seed_game(store, game_id)
             await _contaminate_and_summarize(store, package)
 
-        # Every query and the replay use a fresh SQLite connection to the saved game.
+        # The four queries share one reopened connection; replay opens the save again.
         with SQLiteGameStore(db) as store:
             session = _session(store, package, generator)
             cases = {}

@@ -141,6 +141,9 @@ def _failed_row(case, policy, run_id, error, pricing, emitted=None, suite='contr
     checks = emitted.get('checks')
     required = NARRATIVE_REQUIRED_CHECKS if suite == 'narrative' else REQUIRED_CHECKS
     if (emitted.get('case_id') == case['id'] and emitted.get('policy_id') == policy.value
+            and isinstance(checks, dict) and checks.get('replay') is False):
+        row['checks'] = {'replay': False}
+    if (emitted.get('case_id') == case['id'] and emitted.get('policy_id') == policy.value
             and isinstance(checks, dict) and required.issubset(checks)
             and all(type(checks[name]) is bool for name in required)):
         candidate = {**emitted, 'passed': all(checks[name] for name in required),
