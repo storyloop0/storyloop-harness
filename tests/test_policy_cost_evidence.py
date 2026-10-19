@@ -1,5 +1,6 @@
 """Cost evidence through the actual policy runner, SDK adapter, and CLI."""
 import asyncio
+from copy import deepcopy
 import importlib
 import json
 
@@ -331,6 +332,85 @@ def test_malformed_emitted_row_keeps_known_cost_without_quality_claims():
     assert row["acceptance"]["structural_content"] == "unavailable"
     assert row["acceptance"]["semantic_quality"] == "unreviewed"
     assert "result" not in row and "checks" not in row
+
+
+@pytest.mark.parametrize("complete", [False, True], ids=["partial", "complete"])
+@pytest.mark.parametrize("cancelled", [False, True], ids=["exception", "cancellation"])
+def test_failed_emitted_metrics_project_known_evidence_without_content(
+        tmp_path, complete, cancelled):
+    baseline = run_local(case_ids=("old-clue",),
+                         policy_ids=("history-recent-v1",), pricing=_price())["rows"][0]
+    marker = "PRIVATE_GENERATED_OUTPUT"
+    output = tmp_path / "metrics.json"
+    original = asyncio.CancelledError(marker)
+
+    async def failed(*, case, policy, evidence_sink, **kwargs):
+        emitted = deepcopy(baseline) if complete else {
+            "case_id": case["id"], "policy_id": policy.value,
+        }
+        if complete:
+            emitted["checks"].pop("same_authoritative_result", None)
+            emitted["checks"]["raw_output"] = marker
+            emitted["result"]["raw_output"] = marker
+            emitted["source_ids"]["raw_output"] = marker
+            emitted["clues"]["raw_output"] = marker
+        emitted.update({
+            "raw_output": marker, "known_cost": "0.000011",
+            "provider_input_tokens": 7, "provider_output_tokens": 2,
+            "preparation_seconds": 0.25,
+            "cost_reasons": ["incomplete_stream"],
+            "timing_status": {"preparation": "completed", "raw_output": marker},
+            "replay": {"new_calls": 0, "raw_output": marker},
+            "attempt_summary": {
+                "attempts": [{"invocation_id": "attempt-1", "ordinal": 1,
+                              "model": "offline-test", "task": "scene_turn",
+                              "outcome": "failed", "usage": None,
+                              "usage_state": "missing", "stream_complete": False,
+                              "error_type": "RuntimeError", "raw_output": marker}],
+                "known_usage": [], "reported_attempts": 0,
+                "missing_attempts": 1, "invalid_attempts": 0,
+                "incomplete_stream_attempts": 1, "usage_complete": False,
+                "known_input_tokens": None, "known_output_tokens": None,
+                "known_cached_input_tokens": None, "raw_output": marker},
+            "metadata": {**emitted.get("metadata", {}), "raw_output": marker,
+                         "supplied_generation_settings": {
+                             "temperature": 0.2, "raw_output": marker}},
+        })
+        evidence_sink(emitted)
+        if cancelled:
+            raise original
+        raise RuntimeError(marker)
+
+    kwargs = {"task_fn": failed, "case_ids": ("old-clue",),
+              "policy_ids": ("history-recent-v1",), "pricing": _price(),
+              "output_path": output}
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            run_local(**kwargs)
+        assert caught.value is original
+        report = json.loads(output.read_text(encoding="utf-8"))
+    else:
+        report = run_local(**kwargs)
+    row = report["rows"][0]
+    assert report["passed"] is row["passed"] is False
+    assert row["known_cost"] == "0.000011"
+    assert row["provider_input_tokens"] == 7
+    assert row["provider_output_tokens"] == 2
+    assert row["cost_reasons"] == ["incomplete_stream"]
+    assert row["preparation_seconds"] == 0.25
+    assert row["timing_status"]["preparation"] == "completed"
+    assert row["attempt_summary"]["attempts"][0]["invocation_id"] == "attempt-1"
+    assert row["metadata"]["pricing"] == _price().to_metadata()
+    assert row["metadata"]["supplied_generation_settings"] == {"temperature": 0.2}
+    assert row["acceptance"]["runtime_contract"] == "failed"
+    assert row["acceptance"]["structural_content"] == ("passed" if complete else "unavailable")
+    if complete:
+        assert row["result"] == baseline["result"]
+    else:
+        assert "result" not in row and "checks" not in row
+    serialized = output.read_text(encoding="utf-8")
+    assert marker not in serialized
+    assert "raw_output" not in serialized
 
 
 def test_cli_loads_snapshot_and_rejects_bad_file_before_runner(tmp_path, monkeypatch, capsys):

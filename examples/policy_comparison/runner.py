@@ -1,6 +1,7 @@
 """Run the complete fixed offline matrix and reject partial results."""
 import asyncio
 import json
+from math import isfinite
 import re
 from uuid import uuid4
 
@@ -10,7 +11,7 @@ from .cases import suite_data
 from .acceptance import acceptance
 from .task import task
 from .pricing import PriceSnapshot, cost_evidence
-from .review import SAFE_ROW, make_packet, validate_paths, write_packet
+from .review import SAFE_METADATA, SAFE_ROW, make_packet, validate_paths, write_packet
 from storyloop_harness.usage import summarize_attempt_usage
 
 REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
@@ -18,6 +19,69 @@ REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'state', 'model_calls',
 NARRATIVE_REQUIRED_CHECKS = frozenset({'scope', 'dispatch_match', 'model_calls',
     'recent_clue', 'old_clue_expected', 'replay', 'speech_intent', 'dockhand_target',
     'protected_world'})
+
+_USAGE_FIELDS = {'model': str, 'task': str, 'input_tokens': int,
+                 'output_tokens': int, 'cached_input_tokens': int}
+_ATTEMPT_FIELDS = {'invocation_id': str, 'ordinal': int, 'model': str,
+                   'task': str, 'outcome': str, 'usage': _USAGE_FIELDS,
+                   'usage_state': str, 'stream_complete': bool, 'error_type': str}
+_ATTEMPT_SUMMARY_FIELDS = {
+    'attempts': [_ATTEMPT_FIELDS], 'known_usage': [_USAGE_FIELDS],
+    'reported_attempts': int, 'missing_attempts': int, 'invalid_attempts': int,
+    'incomplete_stream_attempts': int, 'usage_complete': bool,
+    'known_input_tokens': int, 'known_output_tokens': int,
+    'known_cached_input_tokens': int,
+}
+_PHASES = ('preparation', 'projection', 'generation', 'turn', 'replay')
+_ROW_FIELDS = {
+    'provider_input_tokens': int, 'provider_output_tokens': int,
+    'attempt_summary': _ATTEMPT_SUMMARY_FIELDS,
+    'cost': str, 'known_cost': str, 'cost_currency': str,
+    'cost_status': str, 'cost_reasons': [str], 'unpriced_models': [str],
+    **{f'{phase}_seconds': (int, float) for phase in _PHASES},
+    'timing_status': {phase: str for phase in _PHASES},
+    'estimated_request_tokens': int, 'estimated_total_with_reserve': int,
+    'replay_attempt_count': int,
+    'replay': {'new_calls': int, 'new_events': int, 'version_delta': int,
+               'same_state': bool, 'same_narration': bool, 'usage_count': int},
+}
+_METADATA_FIELDS = {
+    **{key: str for key in SAFE_METADATA if key not in (
+        'pricing', 'stream', 'supplied_generation_settings', 'generation_budget', 'budget')},
+    'stream': bool,
+    'supplied_generation_settings': {'temperature': (int, float), 'top_p': (int, float),
+                                     'reasoning_effort': str, 'max_tokens': int},
+    'generation_budget': {'max_requests': int, 'timeout_seconds': (int, float)},
+    'budget': {'context_window_tokens': int, 'output_tokens': int,
+               'safety_margin_tokens': int, 'max_material_tokens': int},
+}
+_RESULT_FIELDS = {'window_broken': bool, 'action_outcome': str,
+                  'state_version_delta': int, 'state_sha256': str, 'events_sha256': str,
+                  'interaction': str, 'target_ids': [str], 'world_unchanged': bool,
+                  'world_sha256': str}
+_MISSING = object()
+
+
+def _project_value(value, shape):
+    """Copy only known metric fields, including inside structured evidence."""
+    if value is None:
+        return None
+    if isinstance(shape, dict):
+        if not isinstance(value, dict):
+            return _MISSING
+        return {key: projected for key, field_shape in shape.items()
+                if key in value
+                if (projected := _project_value(value[key], field_shape)) is not _MISSING}
+    if isinstance(shape, list):
+        if not isinstance(value, list):
+            return _MISSING
+        return [projected for item in value
+                if (projected := _project_value(item, shape[0])) is not _MISSING]
+    if type(value) not in (shape if isinstance(shape, tuple) else (shape,)):
+        return _MISSING
+    if type(value) is float and not isfinite(value):
+        return _MISSING
+    return value
 
 
 def _validate_row(row, case, policy, suite='contracts'):
@@ -65,20 +129,15 @@ def _failed_row(case, policy, run_id, error, pricing, emitted=None, suite='contr
     if not isinstance(emitted, dict):
         return row
     for key in SAFE_ROW:
-        if key in emitted:
-            try:
-                json.dumps(emitted[key])
-            except (TypeError, ValueError):
-                continue
-            row[key] = emitted[key]
+        if key in emitted and key in _ROW_FIELDS:
+            projected = _project_value(emitted[key], _ROW_FIELDS[key])
+            if projected is not _MISSING:
+                row[key] = projected
     if isinstance(emitted.get('metadata'), dict):
-        try:
-            json.dumps(emitted['metadata'])
-        except (TypeError, ValueError):
-            pass
-        else:
-            row['metadata'] = dict(emitted['metadata'])
-            row['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
+        row['metadata'].update({key: projected for key in SAFE_METADATA
+                                if key in emitted['metadata'] and key in _METADATA_FIELDS
+                                if (projected := _project_value(
+                                    emitted['metadata'][key], _METADATA_FIELDS[key])) is not _MISSING})
     checks = emitted.get('checks')
     required = NARRATIVE_REQUIRED_CHECKS if suite == 'narrative' else REQUIRED_CHECKS
     if (emitted.get('case_id') == case['id'] and emitted.get('policy_id') == policy.value
@@ -89,18 +148,18 @@ def _failed_row(case, policy, run_id, error, pricing, emitted=None, suite='contr
                                               content_verified=True)}
         try:
             _validate_row(candidate, case, policy, suite)
-            json.dumps(emitted)
         except (ValueError, TypeError, KeyError):
             pass
         else:
-            row.update(emitted)
-            row['case_id'], row['policy_id'], row['run_id'] = case['id'], policy.value, run_id
-            row['passed'] = False
+            row['checks'] = {key: value for key, value in checks.items() if key in required}
+            row['result'] = _project_value(emitted['result'], _RESULT_FIELDS)
+            for key, shape in (('clues', {'old_present': bool, 'recent_present': bool}),
+                               ('source_ids', {'selected': [str], 'omitted': [str]})):
+                if key in emitted:
+                    projected = _project_value(emitted[key], shape)
+                    if projected is not _MISSING:
+                        row[key] = projected
             row['acceptance'] = acceptance(passed=False, content_verified=True)
-            row['error'] = {'type': type(error).__name__}
-            row['metadata'] = (dict(emitted['metadata'])
-                               if isinstance(emitted.get('metadata'), dict) else {})
-            row['metadata']['pricing'] = pricing.to_metadata() if pricing is not None else None
     return row
 
 
