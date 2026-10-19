@@ -95,8 +95,12 @@ def _observation_evidence(observation, event, owner, events_by_id):
                 if isinstance(strict, dict) and isinstance(strict.get('answer'), str):
                     speaker = strict.get('speaker_id')
                     answer = strict['answer']
-                    if (beat['text'].endswith(f'说：“{answer}”')
-                            and beat['text'].count('说：“') == 1):
+                    name = event.details.get('fact_query_novel_speaker_name')
+                    if (isinstance(name, str) and name
+                            and set(beat) == {'kind', 'text'}
+                            and set(beats) == {f'{event.event_id}:beat:0'}
+                            and observation.observation_id == f'{event.event_id}:beat:0'
+                            and beat['text'] == f'{name}说：“{answer}”'):
                         record = _saved_query_record(event, speaker, answer)
                         if record is not None:
                             if record['status'] == 'known':

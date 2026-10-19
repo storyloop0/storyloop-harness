@@ -146,6 +146,50 @@ def test_saved_strict_reply_is_historical_grounded_answer_only_when_known(known,
     asyncio.run(run())
 
 
+def test_novel_strict_scene_with_unrelated_prefix_is_not_grounded():
+    from storyloop_harness.core.context_evidence import context_entries
+
+    async def run():
+        store = InMemoryGameStore()
+        item = AuthoredFact('wind.tonight', 'North wind', frozenset({'dockhand'}),
+                            frozenset({'player'}))
+        pkg = replace(package(), facts=(item,), presentation_mode='novel')
+        pkg.seed_game(store, 'game')
+        session = SingleCallGameSession(store, pkg, object(), SceneContextProjector(store, pkg))
+        await session.run_fact_query('game', FactQuery(item.id, 'dockhand'), 'q1')
+        version, event = store._games['game']['events']['q1:input']
+        observation = next(o for o in store.observations_for('game', 'player')
+                           if o.observation_id == 'q1:input:beat:0')
+        injected = 'A storm is confirmed. ' + observation.content
+        details = dict(event.details)
+        details['visible_beats'] = {observation.observation_id:
+            {**details['visible_beats'][observation.observation_id], 'text': injected}}
+        altered = context_entries([(version, replace(event, details=details))],
+            (replace(observation, content=injected),), 'player')[-1]
+        assert altered.evidence.kind == 'generated_narrative'
+        assert altered.evidence.fact_reference is None
+
+    asyncio.run(run())
+
+
+def test_novel_strict_scene_preserves_opaque_answer_containing_quote_delimiter():
+    async def run():
+        store = InMemoryGameStore()
+        item = AuthoredFact('wind.tonight', 'He said 说：“North wind”',
+                            frozenset({'dockhand'}), frozenset({'player'}))
+        pkg = replace(package(), facts=(item,), presentation_mode='novel')
+        pkg.seed_game(store, 'game')
+        session = SingleCallGameSession(store, pkg, object(), SceneContextProjector(store, pkg))
+        await session.run_fact_query('game', FactQuery(item.id, 'dockhand'), 'q1')
+        visible = [entry for entry in store.agent_context_entries('game', 'player')
+                   if entry.channel == 'scene']
+        assert len(visible) == 1
+        assert visible[0].evidence.kind == 'grounded_answer'
+        assert visible[0].evidence.fact_reference['fact_id'] == item.id
+
+    asyncio.run(run())
+
+
 def test_projection_keeps_metadata_when_excerpt_drops_caveat():
     store = InMemoryGameStore()
     pkg = seeded(store)

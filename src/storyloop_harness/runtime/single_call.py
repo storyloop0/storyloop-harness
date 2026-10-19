@@ -520,6 +520,9 @@ class SingleCallGameSession:
             named.update(item.actor_id for item in plan.encounters
                          if item.name_learned and item.evidence in beat.text)
         if self.package.presentation_mode == 'novel':
+            if (fact_query is not None and len(visible_segments) == 1
+                    and visible_segments[0].kind == 'dialogue'):
+                details['fact_query_novel_speaker_name'] = visible_segments[0].speaker_name
             visible_segments = [StorySegment('scene', '\n\n'.join(
                 f'{part.speaker_name}说：“{part.text}”' if part.kind == 'dialogue' else part.text
                 for part in visible_segments))]
