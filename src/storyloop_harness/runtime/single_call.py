@@ -27,6 +27,7 @@ from storyloop_harness.runtime.schedule import scenario_cue
 from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.runtime.turn_progress import TurnProgress, emit
 from storyloop_harness.world.scenario import ScenarioPackage
+from storyloop_harness.world.facts import FactQuery
 from storyloop_harness.world.status_fields import status_effects
 from storyloop_harness.agents.scene_prompt import scene_system_prompt
 from storyloop_harness.agents.scene_schema import scene_output_schema
@@ -266,6 +267,11 @@ class SingleCallGameSession:
         return await self.run_turn_bounded(game_id, player_text, turn_id,
                                            max_tick=max_tick, progress=progress)
 
+    async def run_fact_query(self, game_id: str, query: FactQuery, turn_id: str,
+                             progress: TurnProgress | None = None) -> TurnOutcome:
+        from storyloop_harness.runtime.fact_query import run_fact_query
+        return await run_fact_query(self, game_id, query, turn_id, progress)
+
     async def run_turn_bounded(self, game_id: str, player_text: str, turn_id: str,
                                *, max_tick: int | None,
                                progress: TurnProgress | None = None) -> TurnOutcome:
@@ -276,6 +282,8 @@ class SingleCallGameSession:
             visible_before = {item.observation_id
                               for item in self.store.observations_for(game_id, "player")}
             _, saved = self._saved_turn(game_id, turn_id)
+            if isinstance(saved, dict) and 'fact_query' in saved:
+                raise ValueError('turn ID already belongs to a fact query')
             before = self.store.load(game_id)
             inspection = (self.inspect_generated_scene_recovery(
                 before, turn_id, text_hash(player_text), max_tick)
@@ -333,23 +341,27 @@ class SingleCallGameSession:
                             raise GeneratedSceneWriteFailure('generated scene save failed') from exc
                     await emit(progress, "stage", stage="committing")
                     before = self._commit_player(before, turn_id, player_text, plan, max_tick, record)
-            await emit(progress, "stage", stage="characters")
-            processed = await self._runner().run_async(game_id)
-            observations = tuple(item for item in self.store.observations_for(game_id, "player")
-                                 if (item.observation_id not in visible_before
-                                     or item.event_id.startswith(f"{turn_id}:")))
-            segments = tuple(segment_for_observation(self.store, game_id, item)
-                             for item in observations)
-            if not segments:
-                segments = (StorySegment("narration", plan.prose),)
-            narration = "\n\n".join(item.body_text for item in segments)
-            for segment in segments:
-                await emit(progress, "segment", segment=segment.to_dict())
-            return TurnOutcome(plan.decision, narration, observations,
-                               processed.processed_work_ids, processed.snapshot,
-                               False, segments, remaining_work_ids=tuple(
-                                   work.work_id for work in self.store.ready_work(
-                                       game_id, processed.snapshot.tick)))
+            return await self._finish_turn(game_id, turn_id, plan, visible_before, progress)
+
+    async def _finish_turn(self, game_id, turn_id, plan, visible_before, progress,
+                           *, processed_before=()) -> TurnOutcome:
+        await emit(progress, "stage", stage="characters")
+        processed = await self._runner().run_async(game_id)
+        observations = tuple(item for item in self.store.observations_for(game_id, "player")
+                             if (item.observation_id not in visible_before
+                                 or item.event_id.startswith(f"{turn_id}:")))
+        segments = tuple(segment_for_observation(self.store, game_id, item)
+                         for item in observations)
+        if not segments:
+            segments = (StorySegment("narration", plan.prose),)
+        narration = "\n\n".join(item.body_text for item in segments)
+        for segment in segments:
+            await emit(progress, "segment", segment=segment.to_dict())
+        return TurnOutcome(plan.decision, narration, observations,
+                           processed_before + processed.processed_work_ids, processed.snapshot,
+                           False, segments, remaining_work_ids=tuple(
+                               work.work_id for work in self.store.ready_work(
+                                   game_id, processed.snapshot.tick)))
 
     def _validate_plan(self, before: Snapshot, plan: SceneTurn,
                        focus: tuple[str, ...], nearby: tuple[str, ...]) -> SceneTurn:
@@ -423,7 +435,8 @@ class SingleCallGameSession:
 
     def _commit_player(self, before: Snapshot, turn_id: str, player_text: str,
                        plan: SceneTurn, max_tick: int | None,
-                       generated_scene: GeneratedSceneSnapshot | None = None) -> Snapshot:
+                       generated_scene: GeneratedSceneSnapshot | None = None,
+                       *, fact_query: dict[str, object] | None = None) -> Snapshot:
         decision = plan.decision
         duration_ticks = self.clock.elapsed(decision.duration, before.tick) if self.clock else 1
         if max_tick is not None:
@@ -444,6 +457,8 @@ class SingleCallGameSession:
         if generated_scene is not None:
             details['generated_scene_snapshot_id'] = generated_scene.snapshot_id
             details['generated_scene_snapshot_checksum'] = generated_scene.checksum
+        if fact_query is not None:
+            details['fact_query'] = fact_query
         effects: tuple[Effect, ...] = ()
         if decision.intent == "action":
             accepted = plan.action.status == "occurred"

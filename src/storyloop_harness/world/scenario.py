@@ -15,6 +15,7 @@ from storyloop_harness.core.store_port import GameStore
 from storyloop_harness.world.worldbook import Worldbook
 from storyloop_harness.world.status_fields import StatusField, parse_status_fields
 from storyloop_harness.world.story_blueprint import StoryBlueprint
+from storyloop_harness.world.facts import AuthoredFact, parse_facts, validate_catalog
 
 
 def _required_string(raw: dict[str, object], key: str) -> str:
@@ -43,6 +44,10 @@ class ScenarioPackage:
     authored_prologue: str = ""
     story_blueprint: StoryBlueprint | None = None
     actor_public_profiles: dict[str, str] | None = None
+    facts: tuple[AuthoredFact, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_catalog(self.facts, {actor_id for actor_id, _ in self.actor_cards})
 
     @property
     def role_cards(self) -> dict[str, str]:
@@ -156,7 +161,7 @@ class ScenarioPackage:
         return cls(package_id, version, time_unit, ticks_per_day, tuple(actors), actor_names,
                    state, tuple(work), worldbook, action_rules, opening, mutable_fields,
                    presentation_mode, status_fields, authored_prologue, blueprint,
-                   actor_public_profiles)
+                   actor_public_profiles, parse_facts(raw.get('facts', []), set(actor_names)))
 
     def seed_game(self, store: GameStore, game_id: str, *, include_campaign: bool = True,
                   setup_state: dict[str, object] | None = None) -> None:

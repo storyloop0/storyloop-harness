@@ -96,7 +96,8 @@ def logical_value(value: object) -> object:
 
 def package_fingerprint(package: ScenarioPackage) -> str:
     data = {field.name: logical_value(getattr(package, field.name))
-            for field in fields(package) if field.name != 'worldbook'}
+            for field in fields(package) if field.name != 'worldbook'
+            and not (field.name == 'facts' and not package.facts)}
     data['worldbook'] = {'package_id': package.worldbook.package_id,
                          'version': package.worldbook.version,
                          'entries': logical_value(package.worldbook.entries)}
