@@ -50,6 +50,55 @@ Next: edit the story material in the [harbor scenario](examples/freeform), or ex
 
 The installed `storyloop-harness-demo` command (or `python -m storyloop_harness.demo`) loads its own bundled scenario without a checkout examples directory. Temporary saves are removed after the run; pass `--db story.sqlite3` to persist a save, then repeat the same `--turn-id` and `--text` to check replay. Output separates fixture invocations from provider requests (always 0); unchanged replay requires no new events and no fixture invocation. Use the harbor authoring example to edit story material.
 
+## Explicit facts and historical evidence
+
+Use the strict fact entry point when your application already knows the exact fact key and answering NPC. Add optional `facts` to a scenario's `manifest.json` (the default is an empty catalog):
+
+```json
+{
+  "facts": [
+    {
+      "id": "weather.confirmed",
+      "text": "The north wind is confirmed tonight.",
+      "known_by": ["dockhand"],
+      "disclose_to": ["player"],
+      "valid_from_tick": 0,
+      "valid_until_tick": 4
+    }
+  ]
+}
+```
+
+Each ID is unique within the package. `text` is the complete authored answer; `known_by` and `disclose_to` list actor IDs explicitly. The optional interval includes `valid_from_tick` and excludes `valid_until_tick`; omission means no time bound. Invalid IDs, actors, intervals or duplicate facts reject the package. Facts and permissions affect the package fingerprint. Lore, cards, blueprint prose, generated profiles, history and summaries never populate this catalog automatically, and the whole catalog is not sent to ordinary scene generators.
+
+```python
+from storyloop_harness import FactQuery, ScenarioPackage
+from storyloop_harness.context.projection import SceneContextProjector
+from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness.storage import SQLiteGameStore
+
+async def answer(generator):
+    package = ScenarioPackage.load("my-scenario")
+    with SQLiteGameStore("story.sqlite3") as store:
+        # Seed a new game with package.seed_game(store, "game") first.
+        session = SingleCallGameSession(
+            store, package, generator, SceneContextProjector(store, package)
+        )
+        return await session.run_fact_query(
+            "game", FactQuery("weather.confirmed", "dockhand"), "query-1"
+        )
+```
+
+Here `generator` is the application's normal generator; this method never invokes it. The caller supplies `fact_id` and `speaker_id`; player text is not classified or fuzzily matched to keys. The first version supports ordinary saves without campaign or story blueprint and requires a reachable NPC speaker. The recipient is `player`. At the current tick, both NPC knowledge and disclosure permission must pass. Missing, private, not-yet-valid and expired facts all use the same fixed unknown dialogue. Invalid query parameters and unsupported saves fail before the query writes. Answers are the authored text in a fixed dialogue wrapper; no model usage, provider calls or model fees are added by this entry point. The query does not change world values or teach other NPCs the answer.
+
+Reuse the same `turn_id` with the same query to replay the committed answer, including after an SQLite reopen; a different fact, speaker or free-narrative entry with that ID conflicts. Replay returns the saved historical answer even if today's catalog differs. Old committed turns remain readable. Pending snapshots from an older context generation cannot be committed through the new boundary. Existing database rows need no provenance rewrite: records lacking sufficient producer information receive conservative evidence.
+
+For an offline check from the repository root, run `python -m examples.fact_query --output fact-report.json`. It uses synthetic data, a temporary SQLite save that it closes and reopens, and a generator that raises if called. The JSON contains only statuses, counts, zero usage, replay equality and evidence classes. It contains no query or answer bodies. `free_narrative_semantic_quality` is `unreviewed`; the example does not score open-ended prose.
+
+Historical context now carries `evidence` with `kind`, `source_ids`, `owner_id`, `speaker_id` and optional `fact_reference`. Kinds include `grounded_answer`, `utterance`, `generated_narrative`, `generated_memory`, `unverified_summary` and `legacy_unverified`. A `grounded_answer` identifies a validated **historical** strict answer and its package/tick reference; it does not mean that answer is still valid. Source IDs show attribution, not that a source entails every sentence or that the speaker currently knows it. Generated memories and summaries can support story continuity but cannot authorize a strict answer. Ordinary free narrative remains semantically unreviewed.
+
+Custom projection readers must accept `player_history` and NPC `own_history` rows shaped as `{channel, text, tick, evidence}`, `recent_visible_beats` and `recent_player_actions` rows as `{text, evidence}`, and nonempty `player_summary` / `own_summary` as `{text, evidence}` (empty summaries remain `""`). Keep text and evidence together when clipping or budgeting. A custom checkpoint summarizer still receives `CheckpointRequest`; each `request.entries` item has evidence, and `request.previous_summary_evidence` supplies the old summary's unverified provenance. Every resulting summary remains `unverified_summary`, regardless of its wording or source IDs.
+
 ## How the runtime works
 
 ```mermaid
