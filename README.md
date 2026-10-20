@@ -72,28 +72,24 @@ python3 -m venv .venv
 同一剧本中的 `id` 必须唯一；`text` 是作者登记的完整答案，`known_by` 和 `disclose_to` 显式列出角色 ID。可选有效期包含 `valid_from_tick`，不包含 `valid_until_tick`；省略即无时间限制。非法 ID、角色、区间或重复事实会使剧本加载失败。事实及权限参与剧本指纹。世界书、角色卡、蓝图散文、生成档案、历史和摘要不会自动导入清单；普通场景生成请求也不会收到整份清单。
 
 ```python
-from storyloop_harness import FactQuery, ScenarioPackage
-from storyloop_harness.context.projection import SceneContextProjector
-from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness import FactQuery, FactQueryInput, ScenarioPackage, TurnEngine
 from storyloop_harness.storage import SQLiteGameStore
 
-async def answer(generator):
+async def answer(model):
     package = ScenarioPackage.load("my-scenario")
     with SQLiteGameStore("story.sqlite3") as store:
         # 新游戏先调用 package.seed_game(store, "game")。
-        session = SingleCallGameSession(
-            store, package, generator, SceneContextProjector(store, package)
-        )
-        return await session.run_fact_query(
-            "game", FactQuery("weather.confirmed", "dockhand"), "query-1"
-        )
+        engine = TurnEngine(store, package, model)
+        return await engine.run_fact_query(FactQueryInput(
+            "game", FactQuery("weather.confirmed", "dockhand"), "query-1", package.version
+        ))
 ```
 
-这里的 `generator` 是应用原有的生成器；此方法绝不调用它。调用方明确给出 `fact_id` 和 `speaker_id`；运行时不对玩家自然语言做自动分类或模糊匹配。首版只支持没有 campaign、没有 story blueprint 的普通存档，回答 NPC 必须当前可接触，接收者固定为 `player`。当前 tick 下，NPC 知情和向玩家披露的许可都必须成立。不存在、不可披露、未生效和已过期的事实返回完全相同的固定未知对白。非法参数和不支持的存档在查询写入前报错。已知答案由作者原文和固定对白包装组成；严格入口不增加模型调用、模型用量或服务费用，也不改变世界数值或让其他 NPC 自动知情。
+这里的 `model` 是应用原有的场景模型；此方法绝不调用它。调用方明确给出 `fact_id` 和 `speaker_id`；运行时不对玩家自然语言做自动分类或模糊匹配，也不枚举事实清单。请求的 `scenario_version` 和存档中的剧本 ID、版本必须与引擎剧本一致，否则在处理待办和写入前拒绝。首版只支持没有 campaign、没有 story blueprint、引擎未配置 program 的普通存档，回答 NPC 必须当前可接触，接收者固定为 `player`。当前 tick 下，NPC 知情和向玩家披露的许可都必须成立。不存在、不可披露、未生效和已过期的事实返回完全相同的固定未知对白。非法参数和不支持的存档在查询写入前报错。已知答案由作者原文和固定对白包装组成；严格入口不增加模型调用、模型用量或服务费用，配置了自动 checkpoint 摘要器时也跳过刷新。返回的 `events` 仅含本次成功提交的事件；已完成重放没有新事件。查询不改变世界数值，也不让其他 NPC 自动知情。
 
-用相同 `turn_id` 和查询可重放已提交的回答，SQLite 关闭重开后也如此；同 ID 换事实、换角色或换自由叙事入口会冲突。重放读取保存时的答案，不按今日清单重算。旧已提交回合仍可读取；旧上下文版本的未提交生成快照不能越过新版边界提交。已有数据库行无需批量改写来源信息：生产路径信息不足时保守标级。
+用相同 `turn_id` 和查询可重放已提交的回答，SQLite 关闭重开后也如此；同 ID 换事实、换角色或换自由叙事入口会冲突。只要存档剧本 ID 和版本仍与引擎剧本一致，重放就读取保存时的答案，不按今日清单重算。旧上下文版本的未提交生成快照不能越过新版边界提交。已有数据库行无需批量改写来源信息：生产路径信息不足时保守标级。
 
-在仓库根目录运行 `python -m examples.fact_query --output fact-report.json` 可做离线检查。示例只用合成数据、会关闭并重开临时 SQLite 存档，生成器一旦被调用便报错。JSON 仅含状态、计数、零用量、重放一致性和证据类别，不含查询或答案正文。`free_narrative_semantic_quality` 为 `unreviewed`，不代表已评测自由叙事语义质量。
+在仓库根目录运行 `python -m examples.fact_query --output fact-report.json` 可做离线检查。示例只用合成数据、会关闭并重开临时 SQLite 存档，场景模型一旦被调用便报错。JSON 仅含状态、计数、零用量、重放一致性和证据类别，不含查询或答案正文。`free_narrative_semantic_quality` 为 `unreviewed`，不代表已评测自由叙事语义质量。
 
 历史上下文现在附带 `evidence`，字段为 `kind`、`source_ids`、`owner_id`、`speaker_id` 和可选 `fact_reference`。等级包括 `grounded_answer`、`utterance`、`generated_narrative`、`generated_memory`、`unverified_summary`、`legacy_unverified`。`grounded_answer` 仅表示某次经过验证的**历史**严格回答，并保留剧本及当时 tick 的引用；不能证明现在仍然有效。source ID 证明来源归属，不证明来源支持自然语言中的每个断言，也不证明角色此刻知情。生成记忆和摘要可辅助故事连续性，不能授权严格事实回答；普通自由叙事的语义质量仍未评阅。
 

@@ -14,19 +14,19 @@ from tempfile import TemporaryDirectory
 from storyloop_harness.context.checkpoints import CheckpointLifecycle
 from storyloop_harness.context.projection import SceneContextProjector
 from storyloop_harness.core.contracts import Observation, WorldEvent
-from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness import FactQueryInput, TurnEngine
 from storyloop_harness.storage import SQLiteGameStore
 from storyloop_harness.world.facts import AuthoredFact, FactQuery, UNKNOWN_FACT_ANSWER
 from storyloop_harness.world.scenario import ScenarioPackage
 
 
-class ForbiddenGenerator:
-    """Any generation call invalidates this zero-model example."""
+class ForbiddenModel:
+    """Any scene model call invalidates this zero-model example."""
 
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate(self, *args, **kwargs):
+    async def __call__(self, *args, **kwargs):
         self.calls += 1
         raise AssertionError('fact-query example must not generate')
 
@@ -42,11 +42,6 @@ def _package() -> ScenarioPackage:
                      frozenset()),
     )
     return replace(base, facts=facts, initial_work=())
-
-
-def _session(store: SQLiteGameStore, package: ScenarioPackage,
-             generator: ForbiddenGenerator) -> SingleCallGameSession:
-    return SingleCallGameSession(store, package, generator, SceneContextProjector(store, package))
 
 
 async def _contaminate_and_summarize(store: SQLiteGameStore,
@@ -80,7 +75,7 @@ async def _contaminate_and_summarize(store: SQLiteGameStore,
 
 async def run() -> dict[str, object]:
     package = _package()
-    generator = ForbiddenGenerator()
+    model = ForbiddenModel()
     game_id = 'offline-example'
     with TemporaryDirectory(prefix='storyloop-fact-example-') as directory:
         db = Path(directory) / 'save.sqlite3'
@@ -90,7 +85,7 @@ async def run() -> dict[str, object]:
 
         # The four queries share one reopened connection; replay opens the save again.
         with SQLiteGameStore(db) as store:
-            session = _session(store, package, generator)
+            engine = TurnEngine(store, package, model)
             cases = {}
             results = {}
             for label, fact_id in (
@@ -99,8 +94,8 @@ async def run() -> dict[str, object]:
                 ('player_only', 'weather.player_only'),
                 ('undisclosable', 'weather.private'),
             ):
-                outcome = await session.run_fact_query(
-                    game_id, FactQuery(fact_id, 'dockhand'), f'query-{label}')
+                outcome = await engine.run_fact_query(FactQueryInput(
+                    game_id, FactQuery(fact_id, 'dockhand'), f'query-{label}', package.version))
                 results[label] = outcome
                 cases[label] = store.event_details(game_id, f'query-{label}:input')['fact_query']['status']
 
@@ -110,17 +105,21 @@ async def run() -> dict[str, object]:
             assert all(results[label].segments[0].text == UNKNOWN_FACT_ANSWER
                        for label in ('missing', 'player_only', 'undisclosable'))
             assert all(not result.model_usage for result in results.values())
+            assert all(result.events for result in results.values())
+            assert all(store.event_exists(game_id, event.event_id)
+                       for result in results.values() for event in result.events)
+            first_event_count = sum(len(result.events) for result in results.values())
             before_replay_version = store.load(game_id).version
 
         with SQLiteGameStore(db) as reopened:
-            replay = await _session(reopened, package, generator).run_fact_query(
-                game_id, FactQuery('weather.confirmed', 'dockhand'), 'query-known')
+            replay = await TurnEngine(reopened, package, model).run_fact_query(FactQueryInput(
+                game_id, FactQuery('weather.confirmed', 'dockhand'), 'query-known', package.version))
             replay_equal = (
                 replay.narration == results['known'].narration
                 and replay.segments == results['known'].segments
                 and reopened.load(game_id).version == before_replay_version
             )
-            assert replay_equal and not replay.model_usage
+            assert replay_equal and not replay.model_usage and replay.events == ()
             checkpoint = reopened.agent_context_checkpoint(game_id, 'player')
             assert checkpoint.evidence.kind == 'unverified_summary'
             projected = SceneContextProjector(reopened, package).project(
@@ -133,12 +132,14 @@ async def run() -> dict[str, object]:
             assert kinds['generated_memory'] >= 1
             assert kinds['generated_narrative'] >= 1
             assert kinds['legacy_unverified'] >= 1
-            assert generator.calls == 0
+            assert model.calls == 0
             return {
                 'status': 'passed', 'cases': cases,
-                'model_calls': generator.calls,
+                'model_calls': model.calls,
                 'model_usage_records': sum(len(result.model_usage) for result in results.values())
                                        + len(replay.model_usage),
+                'first_query_committed_events': first_event_count,
+                'replay_committed_events': len(replay.events),
                 'sqlite_reopened': True, 'replay_equal': replay_equal,
                 'summary_evidence_kind': checkpoint.evidence.kind,
                 'provenance_counts': dict(sorted(kinds.items())),

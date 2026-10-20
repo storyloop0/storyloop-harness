@@ -72,28 +72,24 @@ Use the strict fact entry point when your application already knows the exact fa
 Each ID is unique within the package. `text` is the complete authored answer; `known_by` and `disclose_to` list actor IDs explicitly. The optional interval includes `valid_from_tick` and excludes `valid_until_tick`; omission means no time bound. Invalid IDs, actors, intervals or duplicate facts reject the package. Facts and permissions affect the package fingerprint. Lore, cards, blueprint prose, generated profiles, history and summaries never populate this catalog automatically, and the whole catalog is not sent to ordinary scene generators.
 
 ```python
-from storyloop_harness import FactQuery, ScenarioPackage
-from storyloop_harness.context.projection import SceneContextProjector
-from storyloop_harness.runtime.single_call import SingleCallGameSession
+from storyloop_harness import FactQuery, FactQueryInput, ScenarioPackage, TurnEngine
 from storyloop_harness.storage import SQLiteGameStore
 
-async def answer(generator):
+async def answer(model):
     package = ScenarioPackage.load("my-scenario")
     with SQLiteGameStore("story.sqlite3") as store:
         # Seed a new game with package.seed_game(store, "game") first.
-        session = SingleCallGameSession(
-            store, package, generator, SceneContextProjector(store, package)
-        )
-        return await session.run_fact_query(
-            "game", FactQuery("weather.confirmed", "dockhand"), "query-1"
-        )
+        engine = TurnEngine(store, package, model)
+        return await engine.run_fact_query(FactQueryInput(
+            "game", FactQuery("weather.confirmed", "dockhand"), "query-1", package.version
+        ))
 ```
 
-Here `generator` is the application's normal generator; this method never invokes it. The caller supplies `fact_id` and `speaker_id`; player text is not classified or fuzzily matched to keys. The first version supports ordinary saves without campaign or story blueprint and requires a reachable NPC speaker. The recipient is `player`. At the current tick, both NPC knowledge and disclosure permission must pass. Missing, private, not-yet-valid and expired facts all use the same fixed unknown dialogue. Invalid query parameters and unsupported saves fail before the query writes. Answers are the authored text in a fixed dialogue wrapper; no model usage, provider calls or model fees are added by this entry point. The query does not change world values or teach other NPCs the answer.
+Here `model` is the application's normal scene model; this method never invokes it. The caller supplies `fact_id` and `speaker_id`; player text is not classified or fuzzily matched to keys, and facts cannot be enumerated. The requested `scenario_version` and the saved scenario ID and version must match the engine package before pending work or writes. The first version supports ordinary saves without campaign or story blueprint and engines without a configured program; it requires a reachable NPC speaker. The recipient is `player`. At the current tick, both NPC knowledge and disclosure permission must pass. Missing, private, not-yet-valid and expired facts all use the same fixed unknown dialogue. Invalid query parameters and unsupported saves fail before the query writes. Answers are the authored text in a fixed dialogue wrapper; no model usage, provider calls or model fees are added by this entry point. Even when an automatic checkpoint summarizer is configured, fact queries skip its refresh. Returned `events` contain only commits from this call; a completed replay has no new events. The query does not change world values or teach other NPCs the answer.
 
-Reuse the same `turn_id` with the same query to replay the committed answer, including after an SQLite reopen; a different fact, speaker or free-narrative entry with that ID conflicts. Replay returns the saved historical answer even if today's catalog differs. Old committed turns remain readable. Pending snapshots from an older context generation cannot be committed through the new boundary. Existing database rows need no provenance rewrite: records lacking sufficient producer information receive conservative evidence.
+Reuse the same `turn_id` with the same query to replay the committed answer, including after an SQLite reopen; a different fact, speaker or free-narrative entry with that ID conflicts. Replay returns the saved historical answer even if today's catalog differs, provided the saved scenario ID and version still match the engine package. Pending snapshots from an older context generation cannot be committed through the new boundary. Existing database rows need no provenance rewrite: records lacking sufficient producer information receive conservative evidence.
 
-For an offline check from the repository root, run `python -m examples.fact_query --output fact-report.json`. It uses synthetic data, a temporary SQLite save that it closes and reopens, and a generator that raises if called. The JSON contains only statuses, counts, zero usage, replay equality and evidence classes. It contains no query or answer bodies. `free_narrative_semantic_quality` is `unreviewed`; the example does not score open-ended prose.
+For an offline check from the repository root, run `python -m examples.fact_query --output fact-report.json`. It uses synthetic data, a temporary SQLite save that it closes and reopens, and a scene model that raises if called. The JSON contains only statuses, counts, zero usage, replay equality and evidence classes. It contains no query or answer bodies. `free_narrative_semantic_quality` is `unreviewed`; the example does not score open-ended prose.
 
 Historical context now carries `evidence` with `kind`, `source_ids`, `owner_id`, `speaker_id` and optional `fact_reference`. Kinds include `grounded_answer`, `utterance`, `generated_narrative`, `generated_memory`, `unverified_summary` and `legacy_unverified`. A `grounded_answer` identifies a validated **historical** strict answer and its package/tick reference; it does not mean that answer is still valid. Source IDs show attribution, not that a source entails every sentence or that the speaker currently knows it. Generated memories and summaries can support story continuity but cannot authorize a strict answer. Ordinary free narrative remains semantically unreviewed.
 

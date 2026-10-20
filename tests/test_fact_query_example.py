@@ -23,6 +23,8 @@ def test_fact_query_cli_reports_verified_boundaries_without_bodies(tmp_path):
         'player_only': 'unknown', 'undisclosable': 'unknown',
     }
     assert report['model_calls'] == report['model_usage_records'] == 0
+    assert report['first_query_committed_events'] > 0
+    assert report['replay_committed_events'] == 0
     assert report['sqlite_reopened'] is True
     assert report['replay_equal'] is True
     assert report['summary_evidence_kind'] == 'unverified_summary'

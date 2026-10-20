@@ -4,7 +4,7 @@ import re
 import logging
 from storyloop_harness.context import ContextBudget, ContextProjection, ContextPolicy
 from dataclasses import replace
-from storyloop_harness.contracts import TurnInput, TurnOutcome
+from storyloop_harness.contracts import TurnInput, FactQueryInput, TurnOutcome
 from storyloop_harness.ports import GameStore, ModelPort, CampaignContext
 from storyloop_harness.runtime.story_clock import StoryClock
 from storyloop_harness.runtime.turn_progress import TurnProgress
@@ -18,6 +18,7 @@ from storyloop_harness.context.checkpoints import CheckpointLifecycle, Checkpoin
 from storyloop_harness.runtime.single_call import SingleCallGameSession
 from storyloop_harness.models.usage import collect_usage
 from storyloop_harness.models.execution_budget import ExecutionRequestLimitExceeded, ExecutionTimeout
+from storyloop_harness.world.facts import FactQuery, validate_identifier
 from storyloop_harness.core.generated_scene import (
     GeneratedSceneRecovery, GeneratedSceneRecoveryInspection, text_hash,
 )
@@ -129,6 +130,31 @@ class TurnEngine:
                         except Exception as exc:
                             logger.warning('checkpoint refresh failed (%s)', type(exc).__name__)
             return replace(result, events=tuple(events), model_usage=tuple(usage.records))
+        finally:
+            self.store.records.reset(token)
+
+    async def run_fact_query(self, input: FactQueryInput,
+                             *, progress: TurnProgress | None = None) -> TurnOutcome:
+        """Answer an explicit authored fact through the ordinary engine boundary."""
+        if not isinstance(input, FactQueryInput):
+            raise ValueError('input must be a FactQueryInput')
+        validate_identifier(input.game_id, 'game_id')
+        validate_identifier(input.turn_id, 'turn_id')
+        validate_identifier(input.scenario_version, 'scenario_version')
+        if not isinstance(input.query, FactQuery):
+            raise ValueError('query must be a FactQuery')
+        input.query.__post_init__()
+        if progress is not None and not callable(progress):
+            raise ValueError('progress must be a callback')
+        self._snapshot_for(TurnInput(input.game_id, '', input.turn_id, input.scenario_version))
+        if self.session.projector.program is not None:
+            raise ValueError('fact queries do not support a configured program')
+        events = []
+        token = self.store.records.set(events)
+        try:
+            result = await self.session.run_fact_query(
+                input.game_id, input.query, input.turn_id, progress=progress)
+            return replace(result, events=tuple(events))
         finally:
             self.store.records.reset(token)
 
