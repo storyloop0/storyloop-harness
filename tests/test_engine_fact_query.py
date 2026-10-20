@@ -256,20 +256,46 @@ def test_failure_and_cancellation_reset_event_context(monkeypatch):
     assert next_result.events and all(event.event_id.startswith('next:') for event in next_result.events)
 
 
-def test_concurrent_engines_and_games_capture_only_their_commits():
+@pytest.mark.parametrize('shared_engine', [False, True])
+def test_concurrent_engines_and_games_capture_only_their_commits(shared_engine):
     pkg, store = package(), InMemoryGameStore()
     for game in ('a', 'b'):
         pkg.seed_game(store, game)
     engines = {game: TurnEngine(store, pkg, ForbiddenModel()) for game in ('a', 'b')}
+    if shared_engine:
+        engines['b'] = engines['a']
+
     async def both():
-        return await asyncio.gather(*(
-            engines[game].run_fact_query(FactQueryInput(
-                game, FactQuery('weather.confirmed', 'dockhand'), 'query-' + game, pkg.version))
-            for game in ('a', 'b')))
+        arrived = set()
+        timed_out = set()
+        release = asyncio.Event()
+
+        async def query(game):
+            async def progress(event):
+                if event == {'type': 'stage', 'stage': 'committing'}:
+                    arrived.add(game)
+                    if len(arrived) == 2:
+                        release.set()
+                    try:
+                        await asyncio.wait_for(release.wait(), timeout=2)
+                    except TimeoutError:
+                        timed_out.add(game)
+
+            return await engines[game].run_fact_query(FactQueryInput(
+                game, FactQuery('weather.confirmed', 'dockhand'), 'query-' + game, pkg.version),
+                progress=progress)
+
+        results = await asyncio.gather(query('a'), query('b'))
+        assert arrived == {'a', 'b'}
+        assert timed_out == set(), 'both queries must reach progress before either commits'
+        return results
+
     a, b = asyncio.run(both())
     assert a.events and b.events
     assert all(event.event_id.startswith('query-a:') for event in a.events)
     assert all(event.event_id.startswith('query-b:') for event in b.events)
+    assert {event.event_id for event in a.events}.isdisjoint(
+        event.event_id for event in b.events)
 
 
 def test_checkpoint_summarizer_is_skipped():
